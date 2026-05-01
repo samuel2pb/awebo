@@ -12,16 +12,22 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Self
 
 from awebo.auth.aws import AwsAuthProvider
+from awebo.auth.s3 import S3AuthProvider
 from awebo.catalog.glue import GlueCatalogBackend
+from awebo.catalog.rest import RestCatalogBackend
 from awebo.config import LakehouseConfig, load_config
 from awebo.exceptions import ConfigError
 from awebo.io.reader import FileReader, ReaderOptions
-from awebo.io.writer import IcebergWriter, WriteSource
+from awebo.io.writer import IcebergWriter, WriteMode, WriteSource
 from awebo.query.engine import QueryEngine
 from awebo.query.result import QueryResult
 
 if TYPE_CHECKING:
     from types import TracebackType
+
+    from pyiceberg.catalog import Catalog as PyIcebergCatalog
+    from pyiceberg.partitioning import PartitionSpec as PyIcebergPartitionSpec
+    from pyiceberg.schema import Schema as PyIcebergSchema
 
     from awebo.auth.base import AuthProvider, Credentials
     from awebo.catalog.base import CatalogBackend
@@ -88,14 +94,59 @@ class Lakehouse:
         """
         self._reader.register(path, alias, options)
 
-    def to_lake(self, data: WriteSource, database: str, table: str) -> None:
-        """Append ``data`` to an Iceberg table, creating it if missing.
+    def to_lake(
+        self,
+        data: WriteSource,
+        database: str,
+        table: str,
+        *,
+        mode: WriteMode = "append",
+        schema: PyIcebergSchema | None = None,
+        partition_spec: PyIcebergPartitionSpec | None = None,
+    ) -> None:
+        """Write ``data`` to an Iceberg table, creating it if missing.
 
         ``data`` may be a Polars DataFrame, a PyArrow Table / RecordBatchReader,
         or a SQL string (which is executed and its result streamed straight
         to the table).
+
+        ``mode`` selects the write semantics:
+
+        * ``"append"`` (default) — add rows to the table.
+        * ``"overwrite"`` — replace the entire table contents. Streaming sources
+          (SQL strings, ``RecordBatchReader``, large DataFrames above the
+          streaming threshold) reject this mode with :class:`WriteError`,
+          since whole-table overwrite requires a single materialised payload.
+
+        ``schema`` and ``partition_spec`` are honoured **only on table create**.
+        If the table already exists they are ignored — schema evolution is out
+        of scope. Pass them through directly from ``pyiceberg.schema.Schema``
+        and ``pyiceberg.partitioning.PartitionSpec``.
         """
-        self._writer.write(data, database, table)
+        self._writer.write(
+            data,
+            database,
+            table,
+            mode=mode,
+            schema=schema,
+            partition_spec=partition_spec,
+        )
+
+    def pyiceberg_catalog(self) -> PyIcebergCatalog:
+        """Return the underlying PyIceberg :class:`Catalog`.
+
+        Escape hatch for advanced operations (manifest tables, snapshot
+        management, schema introspection) that don't map onto
+        ``sql`` / ``read_file`` / ``to_lake``. Most users should not need this.
+
+        Caveats:
+
+        * The handle is cached by the catalog backend; awebo reuses it
+          internally, so mutations through this handle bypass awebo's
+          streaming + write-error wrapping.
+        * Holding a reference past :meth:`close` is undefined.
+        """
+        return self._catalog.pyiceberg(self._credentials)
 
     def close(self) -> None:
         self._engine.close()
@@ -116,10 +167,16 @@ class Lakehouse:
     def _build_auth(config: LakehouseConfig) -> AuthProvider:
         if config.aws is not None:
             return AwsAuthProvider(config.aws)
+        if config.s3 is not None:
+            return S3AuthProvider(config.s3)
         raise ConfigError("no auth provider could be derived from config")
 
     @staticmethod
     def _build_catalog(config: LakehouseConfig) -> CatalogBackend:
         if config.catalog.type == "glue":
             return GlueCatalogBackend(config.catalog)
+        if config.catalog.type == "rest":
+            if config.rest is None:
+                raise ConfigError("rest catalog requires AWEBO_REST_URI / AWEBO_REST_WAREHOUSE")
+            return RestCatalogBackend(config.catalog, config.rest)
         raise ConfigError(f"unsupported catalog type: {config.catalog.type!r}")

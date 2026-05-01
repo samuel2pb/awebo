@@ -8,6 +8,38 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Iceberg REST catalog backend** (`AWEBO_CATALOG_TYPE=rest`): new
+  `RestCatalogBackend` and `S3AuthProvider` enable Tabular / Lakekeeper /
+  Nessie / Polaris deployments and MinIO-backed local stacks. Adds env vars
+  `AWEBO_REST_URI`, `AWEBO_REST_WAREHOUSE`, `AWEBO_REST_TOKEN`,
+  `AWEBO_REST_CREDENTIAL`, `AWEBO_S3_ENDPOINT`, `AWEBO_S3_PATH_STYLE`,
+  `AWEBO_S3_ACCESS_KEY_ID`, `AWEBO_S3_SECRET_ACCESS_KEY`, `AWEBO_S3_REGION`.
+  DuckDB ATTACH emits at most one secret + one
+  `ATTACH '<rest_uri>' AS <name> (TYPE iceberg, ENDPOINT_TYPE 'iceberg_rest')`
+  (no D+1).
+- **`Lakehouse.to_lake(mode=...)`**: `mode="overwrite"` replaces table
+  contents via `pyiceberg.Table.overwrite`. Streaming sources
+  (`RecordBatchReader`, SQL strings, payloads above
+  `streaming_threshold_mb`) reject overwrite with `WriteError`. `mode`
+  defaults to `"append"`.
+- **`Lakehouse.to_lake(schema=..., partition_spec=...)`**: optional
+  `pyiceberg.schema.Schema` and `pyiceberg.partitioning.PartitionSpec`
+  arguments are honoured on table creation; ignored when the table
+  already exists.
+- **`Lakehouse.pyiceberg_catalog()`**: public escape hatch returning the
+  cached underlying `pyiceberg.Catalog` for advanced ops (manifest tables,
+  snapshots, schema introspection).
+
+### Changed
+
+- `LakehouseConfig` gains `s3: S3Settings | None` and
+  `rest: RestSettings | None` fields. `aws` defaults to `None` so REST-only
+  deployments resolve config without AWS env vars.
+
+## [0.0.1]
+
+### Added
+
 - Initial scaffolding: `Lakehouse` facade, package-by-feature layout
   (`auth/`, `catalog/`, `query/`, `io/`, `streaming/`).
 - AWS auth provider with optional STS assume-role and cached credentials.
