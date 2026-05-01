@@ -1,5 +1,6 @@
-# Block any commit that fails ruff (lint+format) or mypy strict.
-# Type hints are mandatory — enforced by ruff `ANN` rules + mypy `strict`.
+# Block any commit that fails ruff (lint+format), mypy strict, or the
+# test suites. Type hints are mandatory — enforced by ruff `ANN` rules +
+# mypy `strict`. Tests run on every commit so CI is not needed.
 
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
@@ -14,6 +15,30 @@ repos:
       - id: mypy
         name: mypy (strict)
         entry: uv run mypy
+        language: system
+        types: [python]
+        pass_filenames: false
+        require_serial: true
+
+      - id: pytest-unit
+        name: pytest (unit)
+        entry: uv run pytest -m "not property and not memory and not integration and not slow"
+        language: system
+        types: [python]
+        pass_filenames: false
+        require_serial: true
+
+      - id: pytest-property
+        name: pytest (property — Hypothesis)
+        entry: uv run pytest -m property
+        language: system
+        types: [python]
+        pass_filenames: false
+        require_serial: true
+
+      - id: pytest-memory
+        name: pytest (memory — memray)
+        entry: uv run pytest --memray -m memory
         language: system
         types: [python]
         pass_filenames: false
