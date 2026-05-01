@@ -6,6 +6,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **REST catalog ATTACH (`#6`)**: `RestCatalogBackend.duckdb_attach_sql`
+  no longer emits `ATTACH ... ENDPOINT_TYPE 'iceberg_rest'`. The DuckDB
+  iceberg extension (1.5.x) only accepts `endpoint_type='glue'` or
+  `'s3_tables'`, so the previous code made `Lakehouse()` instantiation
+  fail eagerly against any REST catalog. The backend now emits only the
+  S3 secret; `to_lake` works through PyIceberg, and reads must go through
+  `iceberg_scan('s3://...')` or `Lakehouse.pyiceberg_catalog()` until
+  DuckDB grows native REST attach.
+
 ### Added
 
 - **Iceberg REST catalog backend** (`AWEBO_CATALOG_TYPE=rest`): new

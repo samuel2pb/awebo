@@ -1,0 +1,57 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Build the wheel + sdist on every push to main and publish them to a
+# rolling GitHub Release tagged "v0.1.0". The tag and assets are
+# overwritten on each merge — version pinning is deferred until the
+# maintainer cuts a real release.
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    env:
+      ROLLING_TAG: v0.1.0
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Setup Python
+        run: uv python install 3.12
+
+      - name: Build wheel + sdist
+        run: uv build
+
+      - name: Replace rolling release
+        run: |
+          set -euo pipefail
+          # Drop any prior release + tag so the new tag points at this commit.
+          gh release delete "$ROLLING_TAG" --yes --cleanup-tag || true
+          gh release create "$ROLLING_TAG" \
+            --target "$GITHUB_SHA" \
+            --title "awebo $ROLLING_TAG (rolling)" \
+            --prerelease \
+            --notes "Rolling pre-release built from the latest \`main\`. Tag and assets are overwritten on every merge until a stable release is cut.
+
+          Install:
+
+          \`\`\`bash
+          uv pip install https://github.com/${GITHUB_REPOSITORY}/releases/download/${ROLLING_TAG}/awebo-0.1.0-py3-none-any.whl
+          \`\`\`" \
+            dist/awebo-0.1.0-py3-none-any.whl \
+            dist/awebo-0.1.0.tar.gz

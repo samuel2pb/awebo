@@ -115,7 +115,10 @@ See [`ARCHITECTURE.md`](./ARCHITECTURE.md). High level:
 ## Roadmap
 
 - [x] AWS Glue + S3 catalog
-- [x] Iceberg REST catalog (cloud-agnostic, MinIO-friendly)
+- [x] Iceberg REST catalog (cloud-agnostic, MinIO-friendly) — write path via
+      PyIceberg; SQL reads via `iceberg_scan('s3://...')` or
+      `lake.pyiceberg_catalog()`. Catalog-qualified DuckDB ATTACH is
+      pending upstream support in the DuckDB iceberg extension.
 - [ ] GCP BigLake / Azure Tables auth providers
 - [ ] Time-travel SQL helpers (`as of timestamp`, `as of version`)
 

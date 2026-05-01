@@ -78,7 +78,14 @@ class Lakehouse:
 
     # ---------------------------------------------------------------- public
     def sql(self, query: str) -> QueryResult:
-        """Execute a SQL query against DuckDB and return a lazy result."""
+        """Execute a SQL query against DuckDB and return a lazy result.
+
+        Catalog-qualified queries (``select ... from <name>.<ns>.<tbl>``) work
+        on Glue. They do **not** work on REST today: the DuckDB iceberg
+        extension (1.5.x) does not yet implement REST ATTACH, so awebo skips
+        ATTACH for REST and you must read REST-backed tables via
+        ``iceberg_scan('s3://...')`` or :meth:`pyiceberg_catalog`.
+        """
         return QueryResult(self._engine.execute(query))
 
     def read_file(
