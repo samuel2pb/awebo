@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="./docs/img/logo.png" alt="awebo" width="240" />
+  <img src="./docs/img/logo.png" alt="awebo" width="480" />
 </p>
 
 # awebo
