@@ -81,8 +81,26 @@ class RestCatalogBackend(CatalogBackend):
         return self._pyiceberg
 
     def duckdb_attach_sql(self, credentials: Credentials) -> list[str]:
-        statements: list[str] = []
+        """Return DuckDB statements needed before query execution.
 
+        The DuckDB iceberg extension (as of 1.5.x) only accepts
+        ``ENDPOINT_TYPE`` values of ``'glue'`` and ``'s3_tables'`` — REST
+        attach is not implemented yet. So this backend deliberately skips
+        ATTACH and only registers an S3 secret for object-store reads.
+
+        Consequences:
+
+        * Catalog-qualified SQL like ``select * from <name>.<ns>.<tbl>`` is
+          unavailable on REST.
+        * Direct iceberg scans (``select * from iceberg_scan('s3://...')``)
+          and pyiceberg-driven reads (``lake.pyiceberg_catalog().load_table(
+          ...).scan().to_arrow()``) still work and benefit from the secret.
+        * Writes through ``to_lake`` are unaffected — they go through
+          PyIceberg directly.
+
+        When DuckDB grows native REST attach, lift this restriction by
+        emitting the ``ATTACH '<uri>' AS <name> (TYPE iceberg, ...)`` here.
+        """
         secret_parts: list[str] = ["TYPE s3"]
         endpoint = (credentials.extra or {}).get("s3.endpoint")
         if endpoint:
@@ -99,19 +117,11 @@ class RestCatalogBackend(CatalogBackend):
         if credentials.session_token:
             secret_parts.append(f"SESSION_TOKEN '{credentials.session_token}'")
 
-        # Only emit the secret if we actually have something beyond TYPE s3
-        # to put in it; an empty secret is rejected by DuckDB.
-        if len(secret_parts) > 1:
-            secret_name = f"awebo_{self.name}_s3"
-            statements.append(
-                f"CREATE OR REPLACE SECRET {secret_name} ({', '.join(secret_parts)});"
-            )
-
-        attach_props: list[str] = ["TYPE iceberg", "ENDPOINT_TYPE 'iceberg_rest'"]
-        if self._rest.token:
-            attach_props.append(f"TOKEN '{self._rest.token}'")
-        statements.append(f"ATTACH '{self._rest.uri}' AS {self.name} ({', '.join(attach_props)});")
-        return statements
+        # Empty secret is rejected by DuckDB; only emit when we have S3 props.
+        if len(secret_parts) <= 1:
+            return []
+        secret_name = f"awebo_{self.name}_s3"
+        return [f"CREATE OR REPLACE SECRET {secret_name} ({', '.join(secret_parts)});"]
 
     def ensure_namespace(self, credentials: Credentials, namespace: str) -> None:
         catalog = self.pyiceberg(credentials)
