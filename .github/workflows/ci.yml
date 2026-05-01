@@ -5,8 +5,10 @@ on:
     branches: [main]
   pull_request:
 
+# Lint + format are enforced by pre-commit on each commit; CI runs the
+# slower / environment-sensitive gates only (type-check + tests).
 jobs:
-  lint-type-test:
+  type-test:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -23,11 +25,6 @@ jobs:
       - name: Sync env
         run: uv sync --all-extras
 
-      # Hard gates — type hints are mandatory.
-      - name: Ruff lint (incl. ANN — annotations required)
-        run: uv run ruff check src tests
-      - name: Ruff format check
-        run: uv run ruff format --check src tests
       - name: Mypy strict (src + tests)
         run: uv run mypy
 
