@@ -1,0 +1,72 @@
+"""File reader with format auto-detection.
+
+``Lakehouse.read_file(path, alias=...)`` registers an external file as a
+DuckDB view named ``alias`` so subsequent ``sql()`` calls can join it. We
+deliberately register a *view* (not a materialised table) so DuckDB streams
+the file from disk/S3 on demand and respects the streaming threshold.
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+from awebo.exceptions import QueryError
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+    from awebo.query.engine import QueryEngine
+
+type ReaderOptionScalar = bool | int | float | str
+type ReaderOptionValue = ReaderOptionScalar | Sequence[ReaderOptionScalar]
+type ReaderOptions = dict[str, ReaderOptionValue]
+
+_EXT_TO_FUNC: dict[str, str] = {
+    ".parquet": "read_parquet",
+    ".pq": "read_parquet",
+    ".csv": "read_csv_auto",
+    ".tsv": "read_csv_auto",
+    ".json": "read_json_auto",
+    ".ndjson": "read_json_auto",
+    ".jsonl": "read_json_auto",
+    ".arrow": "read_parquet",  # arrow IPC handled separately if needed
+}
+
+
+class FileReader:
+    def __init__(self, engine: QueryEngine) -> None:
+        self._engine = engine
+
+    @staticmethod
+    def detect_format(path: str) -> str:
+        lower = path.lower().split("?", 1)[0]
+        for ext, func in _EXT_TO_FUNC.items():
+            if lower.endswith(ext):
+                return func
+        raise QueryError(f"could not autodetect file format for {path!r}")
+
+    def register(
+        self,
+        path: str,
+        alias: str,
+        options: ReaderOptions | None = None,
+    ) -> None:
+        func = self.detect_format(path)
+        opts_sql = ""
+        if options:
+            parts = [f"{k}={_render_option(v)}" for k, v in options.items()]
+            opts_sql = ", " + ", ".join(parts)
+        sql = f"CREATE OR REPLACE VIEW {alias} AS SELECT * FROM {func}('{path}'{opts_sql});"
+        self._engine.execute(sql)
+
+
+def _render_option(value: ReaderOptionValue) -> str:
+    if isinstance(value, bool):
+        return "TRUE" if value else "FALSE"
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, str):
+        escaped = value.replace("'", "''")
+        return f"'{escaped}'"
+    # Sequence of scalars
+    return "[" + ", ".join(_render_option(v) for v in value) + "]"

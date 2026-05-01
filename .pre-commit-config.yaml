@@ -1,0 +1,20 @@
+# Block any commit that fails ruff (lint+format) or mypy strict.
+# Type hints are mandatory — enforced by ruff `ANN` rules + mypy `strict`.
+
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.12
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: local
+    hooks:
+      - id: mypy
+        name: mypy (strict)
+        entry: uv run mypy
+        language: system
+        types: [python]
+        pass_filenames: false
+        require_serial: true

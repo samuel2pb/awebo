@@ -1,0 +1,39 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Tooling caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.hypothesis/
+htmlcov/
+coverage.xml
+.coverage
+.coverage.*
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+
+# uv lockfile is committed
+# (do NOT ignore uv.lock)
+
+# Memray output
+*.memray
+memray-*.bin
+
+# Local env
+.env
+.env.*
+!.env.example
