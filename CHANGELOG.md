@@ -29,6 +29,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   installed package without re-spawning Python. Forwards trailing args
   as ``sys.argv[1:]``. New ``runner`` extra pulls ``gcsfs`` for GCS
   support; bundled in the container image.
+- **Entrypoint runtime deps (`#9`)**: `python -m awebo` accepts
+  ``--with PKG`` (repeatable), ``--with-requirements FILE`` (local path
+  or fsspec URI, repeatable), and ``--python VERSION``. PEP 723 inline
+  ``# /// script ... # ///`` blocks declaring ``dependencies = [...]``
+  are honoured automatically and merged with ``--with`` flags.
+  Resolution is delegated to ``uv pip install --target`` into a
+  content-addressed cache (``$AWEBO_DEPS_CACHE`` or ``/tmp/awebo-deps``)
+  with a ``.awebo-installed`` sentinel so reruns of the same dep set
+  skip resolution. The runtime container now ships the ``uv`` binary so
+  consumer images do not need to extend awebo just to add a few deps.
 
 ### Fixed
 

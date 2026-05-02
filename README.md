@@ -146,6 +146,34 @@ Install the GCS backend separately if you need `gs://`:
 uv add "awebo[runner]"
 ```
 
+### Runtime dependencies
+
+Jobs frequently need a few extra packages on top of the awebo runtime
+(e.g. `httpx`, `pydantic`). Three ways to declare them — all merged
+before the script runs:
+
+```bash
+# repeatable --with flags
+python -m awebo --with httpx --with 'pydantic>=2.7' job.py
+
+# pip-style requirements file (local path or fsspec URI)
+python -m awebo --with-requirements s3://my-bucket/jobs/reqs.txt job.py
+
+# PEP 723 inline metadata at the top of the script
+cat job.py
+# /// script
+# requires-python = ">=3.12"
+# dependencies = ["httpx>=0.27", "pydantic>=2.7"]
+# ///
+python -m awebo job.py
+```
+
+Resolution is delegated to `uv pip install --target` into a
+content-addressed cache (`$AWEBO_DEPS_CACHE`, default `/tmp/awebo-deps`),
+so reruns of the same dep set skip resolution entirely. The container
+image bundles `uv` for this reason — no consumer image extension is
+needed just to add a few packages.
+
 ## Architecture
 
 See [`ARCHITECTURE.md`](./ARCHITECTURE.md). High level:
