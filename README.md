@@ -204,21 +204,31 @@ pull in a few packages.
 
 ## Infrastructure
 
-`awebo` is the **runtime** layer. The cloud substrate beneath it —
-S3 data-lake buckets, IAM, VPC, and the Fargate cluster the container
-runs on — is provisioned by [**tundra**](https://github.com/samuel2pb/tundra),
-a small Terraform module library for Fargate-based data lakes. A typical
-deployment composes:
+`awebo` is the **runtime** layer. The cloud substrate beneath it is
+provisioned by [**tundra**](https://github.com/samuel2pb/tundra) — *"a
+small, opinionated Terraform module library for spinning up the cloud
+pieces of a Fargate-based data lake: S3 zones, operational buckets, a
+minimal VPC, and an ECS cluster with task roles and task definitions."*
 
 | Tundra module | What it gives awebo |
 | --- | --- |
 | `modules/aws/datalake-buckets` | `raw` / `sot` / `smt` S3 zones Iceberg writes into. |
-| `modules/aws/iam-container-role` | Task role assumed by awebo containers (Glue + S3 perms). |
-| `modules/aws/ecs-cluster` + `ecs-task-definition` | Fargate cluster that runs `python -m awebo <job>` against the image produced by [`publish-ecr.yml`](.github/workflows/publish-ecr.yml). |
 | `modules/aws/platform-buckets` | tfstate / logs / artifacts / athena buckets for the platform itself. |
+| `modules/aws/vpc` | Minimal `/27` VPC the Fargate tasks run in. |
+| `modules/aws/iam-container-role` | Task role assumed by awebo containers (Glue + S3 perms). |
+| `modules/aws/ecs-cluster` + `ecs-task-definition` | Fargate cluster + task def that run `python -m awebo <job>` against the image produced by [`publish-ecr.yml`](.github/workflows/publish-ecr.yml). |
+| `modules/aws/main` | Composition that wires the rest together. Accepts `task_image` (point it at the awebo ECR URI), `task_environment`, and `task_secrets` so consumer Terraform doesn't have to wire each module manually. |
 
-Pin a tundra version in the consumer's Terraform and call `terraform apply`;
-awebo handles everything from there.
+Pin a tundra version in the consumer's Terraform (latest tag is `v0.1.0`)
+and call `terraform apply`; awebo handles everything from there.
+
+```hcl
+module "platform" {
+  source     = "git::https://github.com/samuel2pb/tundra.git//modules/aws/main?ref=v0.1.0"
+  task_image = "<account>.dkr.ecr.<region>.amazonaws.com/awebo:latest"
+  # ... task_environment / task_secrets / account_id / account_name ...
+}
+```
 
 ## Architecture
 
