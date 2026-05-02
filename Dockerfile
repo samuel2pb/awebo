@@ -44,6 +44,10 @@ WORKDIR /app
 COPY --from=builder /app/.venv /app/.venv
 COPY --from=builder /root/.duckdb /home/awebo/.duckdb
 
+# uv is required at runtime so the entrypoint can resolve `--with`,
+# `--with-requirements`, and PEP 723 deps before invoking the user job.
+COPY --from=ghcr.io/astral-sh/uv:0.5 /uv /uvx /usr/local/bin/
+
 RUN chown -R awebo:awebo /home/awebo/.duckdb /app
 
 USER awebo
