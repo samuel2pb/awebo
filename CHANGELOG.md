@@ -6,6 +6,30 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Container image + ECR publish workflow**: new `Dockerfile` (multi-stage,
+  non-root) bakes the DuckDB `iceberg` and `httpfs` extensions at build
+  time per the cold-start invariant.
+  `.github/workflows/publish-ecr.yml` builds and pushes
+  `${AWS_ECR_REPO}:latest` and `${AWS_ECR_REPO}:<sha>` on every push to
+  `main` (`AWS_ECR_REPO`, `AWS_REGION` repo vars; `AWS_ACCESS_KEY` +
+  `AWS_SECRET_ACCESS_KEY` secrets). `scripts/ecr-bootstrap.sh`
+  idempotently provisions the ECR repo before the first workflow run.
+- **Job-runner entrypoint** (`python -m awebo <target> [args...]`):
+  `src/awebo/__main__.py` accepts (a) a single ``.py`` file, (b) a local
+  directory containing ``__main__.py`` plus sibling modules, or (c) a
+  ``.zip`` zipapp whose root contains ``__main__.py`` and any helper
+  modules. Files (.py, .zip) may be passed as a local path or as an
+  fsspec URI (`s3://`, `gs://`, `gcs://`, `https://`, `file://`, ...);
+  remote targets are streamed into a private temp dir via fsspec.
+  Execution uses :func:`runpy.run_path` inside the same interpreter, so
+  ``sys.path[0]`` is the script parent / zip root / package dir (sibling
+  imports resolve out of the box) and ``import awebo`` finds the
+  installed package without re-spawning Python. Forwards trailing args
+  as ``sys.argv[1:]``. New ``runner`` extra pulls ``gcsfs`` for GCS
+  support; bundled in the container image.
+
 ### Fixed
 
 - **REST catalog ATTACH (`#6`)**: `RestCatalogBackend.duckdb_attach_sql`
