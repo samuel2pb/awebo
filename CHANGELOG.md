@@ -13,8 +13,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   time per the cold-start invariant.
   `.github/workflows/publish-ecr.yml` builds and pushes
   `${AWS_ECR_REPO}:latest` and `${AWS_ECR_REPO}:<sha>` on every push to
-  `main` via OIDC (`AWS_ECR_REPO`, `AWS_REGION` repo vars;
-  `AWS_OIDC_ROLE_ARN` secret).
+  `main` (`AWS_ECR_REPO`, `AWS_REGION` repo vars; `AWS_ACCESS_KEY` +
+  `AWS_SECRET_ACCESS_KEY` secrets). `scripts/ecr-bootstrap.sh`
+  idempotently provisions the ECR repo before the first workflow run.
 - **Job-runner entrypoint** (`python -m awebo <target> [args...]`):
   `src/awebo/__main__.py` accepts (a) a single ``.py`` file, (b) a local
   directory containing ``__main__.py`` plus sibling modules, or (c) a
