@@ -113,8 +113,8 @@ you need.
 ```python
 from pyiceberg.partitioning import PartitionField, PartitionSpec
 from pyiceberg.schema import Schema
-from pyiceberg.transforms import DayTransform
-from pyiceberg.types import NestedField, StringType, TimestamptzType
+from pyiceberg.transforms import DayTransform, IdentityTransform
+from pyiceberg.types import NestedField, LongType, StringType, TimestamptzType
 
 schema = Schema(
     NestedField(1, "ingested_at", TimestamptzType(), required=True),
@@ -124,12 +124,25 @@ spec = PartitionSpec(
     PartitionField(source_id=1, field_id=1000, transform=DayTransform(), name="day"),
 )
 
-# Honoured on create; ignored if the table already exists.
+# Honoured on create; partition_spec triggers evolution if table already exists.
 lake.to_lake(arrow_table, "bronze", "events", schema=schema, partition_spec=spec)
 
-# Replace whole-table contents in one commit (rejects streaming sources).
+# Dynamic partition overwrite — only replaces partitions present in the data.
+# Unpartitioned tables get a full replacement. All source types accepted.
 lake.to_lake(snapshot, "bronze", "cadastro", mode="overwrite")
 ```
+
+### Schema evolution and type widening
+
+```python
+# Merge new columns and widen compatible types (e.g. int32 → int64)
+lake.to_lake(df_with_new_cols, "bronze", "events", schema_evolution=True)
+```
+
+`schema_evolution=True` calls PyIceberg's `union_by_name` under the hood —
+it adds columns that exist in the incoming data but not in the table, and
+widens types where the promotion is safe. Disabled by default to prevent
+accidental schema drift.
 
 Need direct PyIceberg access (snapshot rollback, manifest tables, schema
 introspection)? Use the escape hatch:
