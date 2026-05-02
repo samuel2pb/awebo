@@ -73,10 +73,13 @@ class GlueCatalogBackend(CatalogBackend):
 
         secret_sql = f"CREATE OR REPLACE SECRET {secret_name} ({', '.join(secret_parts)});"
 
+        # DuckDB's Glue ATTACH path is the federation identifier ('',
+        # account_id, or account_id:catalog), not the S3 warehouse URI.
+        # `:` resolves to the caller's current account + default catalog,
+        # which is what every awebo deployment wants by default.
+        glue_path = self._settings.properties.get("glue_catalog_id", ":")
         attach_props = ["TYPE iceberg", "ENDPOINT_TYPE 'glue'"]
-        attach_sql = (
-            f"ATTACH '{self._settings.warehouse}' AS {self.name} ({', '.join(attach_props)});"
-        )
+        attach_sql = f"ATTACH '{glue_path}' AS {self.name} ({', '.join(attach_props)});"
 
         return [secret_sql, attach_sql]
 
