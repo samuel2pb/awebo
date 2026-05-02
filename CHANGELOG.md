@@ -40,6 +40,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   skip resolution. The runtime container now ships the ``uv`` binary so
   consumer images do not need to extend awebo just to add a few deps.
 
+### Changed
+
+- **README**: expanded container examples (AWS creds, `--with` flags, REST
+  catalog / MinIO), added "Orchestrating jobs" section (cron, Fargate,
+  EventBridge, Airflow, Step Functions).
+
 ### Fixed
 
 - **REST catalog ATTACH (`#6`)**: `RestCatalogBackend.duckdb_attach_sql`

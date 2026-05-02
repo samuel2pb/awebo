@@ -33,6 +33,13 @@ auto-streaming for larger-than-memory payloads and zero D+1 API patterns.
 - **Container-ready job runner.** Ship a `.py`, a directory, or a zipapp;
   resolve runtime deps from CLI flags, requirements files, or PEP 723
   inline metadata. Consumers don't need to publish their own image.
+- **Fraction-of-the-cost lakehouse.** No managed clusters spinning
+  idle, no per-compute-unit billing, no heavyweight runtimes that charge
+  you to sit around waiting for work. awebo runs as a short-lived Fargate
+  task (256 MB – 1 GB, spot-eligible) reading and writing plain S3 +
+  Iceberg — you pay for the seconds your job actually runs and the
+  storage it touches. A recurring daily pipeline that would cost hundreds
+  on a managed platform lands in single-digit dollars per month.
 - **Pairs with [tundra](https://github.com/samuel2pb/tundra)** for the
   Terraform substrate underneath — Fargate cluster, IAM, VPC, and the
   S3 zones (`raw` / `sot` / `smt`) that Iceberg writes into.
@@ -168,10 +175,34 @@ container image (built by `.github/workflows/publish-ecr.yml`) uses the
 same entrypoint:
 
 ```bash
+# Minimal: Glue catalog, AWS creds from env
 docker run --rm \
-  -e AWEBO_CATALOG_TYPE=glue -e AWS_REGION=us-east-1 \
+  -e AWEBO_CATALOG_TYPE=glue \
+  -e AWS_REGION=us-east-1 \
+  -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY \
   $AWS_ECR_REPO:latest \
   s3://my-bucket/jobs/ingest.py
+
+# With runtime deps and script args
+docker run --rm \
+  -e AWEBO_CATALOG_TYPE=glue \
+  -e AWS_REGION=us-east-1 \
+  -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY \
+  $AWS_ECR_REPO:latest \
+  --with httpx --with 'pydantic>=2.7' \
+  s3://my-bucket/jobs/ingest.py --date 2024-01-15
+
+# REST catalog (e.g. Lakekeeper + MinIO local stack)
+docker run --rm \
+  -e AWEBO_CATALOG_TYPE=rest \
+  -e AWEBO_REST_URI=http://host.docker.internal:8181 \
+  -e AWEBO_REST_WAREHOUSE=warehouse \
+  -e AWEBO_S3_ENDPOINT=http://host.docker.internal:9000 \
+  -e AWEBO_S3_ACCESS_KEY_ID=minioadmin \
+  -e AWEBO_S3_SECRET_ACCESS_KEY=minioadmin \
+  -e AWEBO_S3_PATH_STYLE=true \
+  $AWS_ECR_REPO:latest \
+  ./jobs/transform.py
 ```
 
 ### Runtime dependencies
@@ -201,6 +232,51 @@ content-addressed cache (`$AWEBO_DEPS_CACHE`, default `/tmp/awebo-deps`),
 so reruns of the same dep set skip resolution entirely. The container
 image bundles `uv` for this — no consumer image extension needed just to
 pull in a few packages.
+
+## Orchestrating jobs
+
+### Local: script + cron
+
+The simplest deployment — a `.py` file, a cron schedule, and env vars:
+
+```bash
+# /etc/cron.d/awebo-daily-ingest
+0 6 * * * APP_USER . /home/app/.env && python -m awebo /opt/jobs/ingest.py 2>&1 | logger -t awebo
+```
+
+Or run it from any scheduler that can execute a shell command (Airflow
+`BashOperator`, GitHub Actions `schedule`, systemd timer).
+
+### Fargate: zero-infra container tasks
+
+With [tundra](https://github.com/samuel2pb/tundra) provisioned, trigger
+awebo tasks on Fargate — no long-lived servers:
+
+```bash
+# One-off task via AWS CLI
+aws ecs run-task \
+  --cluster awebo \
+  --task-definition awebo-job \
+  --overrides '{
+    "containerOverrides": [{
+      "name": "awebo",
+      "command": ["s3://my-bucket/jobs/ingest.py", "--date", "2024-01-15"]
+    }]
+  }'
+```
+
+Common orchestration patterns:
+
+| Trigger | How |
+| --- | --- |
+| **Scheduled** | EventBridge rule → ECS RunTask |
+| **Event-driven** | S3 notification → EventBridge → ECS RunTask |
+| **Airflow** | `EcsRunTaskOperator` with `overrides` for the script path |
+| **Step Functions** | `ecs:RunTask` action in a state machine |
+
+The task definition created by tundra already sets `AWEBO_CATALOG_TYPE`,
+`AWS_REGION`, and the warehouse vars via SSM — the only override needed
+per job is the script path (and any `--with` flags or script args).
 
 ## Infrastructure
 
