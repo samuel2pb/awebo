@@ -33,6 +33,9 @@ auto-streaming for larger-than-memory payloads and zero D+1 API patterns.
 - **Container-ready job runner.** Ship a `.py`, a directory, or a zipapp;
   resolve runtime deps from CLI flags, requirements files, or PEP 723
   inline metadata. Consumers don't need to publish their own image.
+- **Pairs with [tundra](https://github.com/samuel2pb/tundra)** for the
+  Terraform substrate underneath — Fargate cluster, IAM, VPC, and the
+  S3 zones (`raw` / `sot` / `smt`) that Iceberg writes into.
 
 ## Quickstart
 
@@ -198,6 +201,24 @@ content-addressed cache (`$AWEBO_DEPS_CACHE`, default `/tmp/awebo-deps`),
 so reruns of the same dep set skip resolution entirely. The container
 image bundles `uv` for this — no consumer image extension needed just to
 pull in a few packages.
+
+## Infrastructure
+
+`awebo` is the **runtime** layer. The cloud substrate beneath it —
+S3 data-lake buckets, IAM, VPC, and the Fargate cluster the container
+runs on — is provisioned by [**tundra**](https://github.com/samuel2pb/tundra),
+a small Terraform module library for Fargate-based data lakes. A typical
+deployment composes:
+
+| Tundra module | What it gives awebo |
+| --- | --- |
+| `modules/aws/datalake-buckets` | `raw` / `sot` / `smt` S3 zones Iceberg writes into. |
+| `modules/aws/iam-container-role` | Task role assumed by awebo containers (Glue + S3 perms). |
+| `modules/aws/ecs-cluster` + `ecs-task-definition` | Fargate cluster that runs `python -m awebo <job>` against the image produced by [`publish-ecr.yml`](.github/workflows/publish-ecr.yml). |
+| `modules/aws/platform-buckets` | tfstate / logs / artifacts / athena buckets for the platform itself. |
+
+Pin a tundra version in the consumer's Terraform and call `terraform apply`;
+awebo handles everything from there.
 
 ## Architecture
 
