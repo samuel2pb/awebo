@@ -1,0 +1,4 @@
+# GitHub CODEOWNERS — every path requires review from @samuel2pb.
+# Enforcement requires the "Require review from Code Owners" branch
+# protection rule on `main` (and `develop`, if protected).
+* @samuel2pb
