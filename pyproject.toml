@@ -43,8 +43,8 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/samuelpbarbosa/awebo"
-Issues = "https://github.com/samuelpbarbosa/awebo/issues"
+Homepage = "https://github.com/samuel2pb/awebo"
+Issues = "https://github.com/samuel2pb/awebo/issues"
 
 [build-system]
 requires = ["uv_build>=0.11.8,<0.12.0"]

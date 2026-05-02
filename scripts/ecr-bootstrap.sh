@@ -4,12 +4,15 @@
 # exists so the first workflow run has somewhere to push to.
 #
 # Usage:
-#   scripts/ecr-bootstrap.sh --repo awebo [--region us-east-1] [--profile dodpit]
+#   scripts/ecr-bootstrap.sh --repo awebo [--region us-east-1] [--profile NAME]
+#
+# Profile resolution: --profile flag, then $AWS_PROFILE env var, then the
+# AWS CLI default profile (no --profile passed to aws).
 
 set -euo pipefail
 
-PROFILE="dodpit"
-REGION="us-east-1"
+PROFILE="${AWS_PROFILE:-}"
+REGION="${AWS_REGION:-us-east-1}"
 REPO=""
 SCAN_ON_PUSH="true"
 IMMUTABLE="false"
@@ -19,8 +22,8 @@ usage() {
 usage: $(basename "$0") --repo NAME [--region REGION] [--profile PROFILE]
 
   --repo NAME        ECR repository name (required)
-  --region REGION    AWS region (default: us-east-1)
-  --profile PROFILE  AWS CLI profile (default: dodpit)
+  --region REGION    AWS region (default: \$AWS_REGION or us-east-1)
+  --profile PROFILE  AWS CLI profile (default: \$AWS_PROFILE, else CLI default)
   --immutable        Create with IMMUTABLE tag policy (default MUTABLE)
   --no-scan          Disable scan-on-push (default enabled)
 USAGE
@@ -41,7 +44,13 @@ done
 
 [[ -z "$REPO" ]] && { echo "error: --repo is required" >&2; usage; }
 
-aws_cli() { aws --profile "$PROFILE" --region "$REGION" "$@"; }
+aws_cli() {
+    if [[ -n "$PROFILE" ]]; then
+        aws --profile "$PROFILE" --region "$REGION" "$@"
+    else
+        aws --region "$REGION" "$@"
+    fi
+}
 
 ACCOUNT_ID="$(aws_cli sts get-caller-identity --query Account --output text)"
 REGISTRY="${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com"
