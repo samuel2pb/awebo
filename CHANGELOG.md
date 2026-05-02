@@ -8,6 +8,28 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Dynamic partition overwrite (`#13`)**: `to_lake(..., mode="overwrite")`
+  is now partition-aware. When the target table uses identity partition
+  transforms, only the partitions present in the incoming data are replaced
+  — untouched partitions are preserved. Unpartitioned tables still get a
+  full replacement. All source types (SQL strings, `RecordBatchReader`,
+  large DataFrames) are now accepted for overwrite. In-memory sources
+  (Arrow tables and Polars DataFrames of any size) use PyIceberg's
+  `dynamic_partition_overwrite` directly. SQL strings use a transactional
+  path: a cheap `SELECT DISTINCT` pre-query extracts partition values for
+  a scoped `delete`, then chunked `append` inside a single PyIceberg
+  `Transaction` — DuckDB handles disk spill so memory stays bounded.
+  `RecordBatchReader` (one-shot) falls back to full replacement.
+- **Schema evolution**: `to_lake` now merges the incoming schema into an
+  existing table via PyIceberg's `union_by_name` — adds new columns and
+  widens compatible types (e.g. `int32` → `int64`). Enabled by default
+  (`schema_evolution=True`); set to `False` to reject schema mismatches.
+- **Partition evolution**: passing `partition_spec=` on a `to_lake` call
+  against an existing table now evolves the partition spec (adds/removes
+  fields) instead of silently ignoring it.
+
+### Added
+
 - **Container image + ECR publish workflow**: new `Dockerfile` (multi-stage,
   non-root) bakes the DuckDB `iceberg` and `httpfs` extensions at build
   time per the cold-start invariant.
@@ -39,6 +61,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   with a ``.awebo-installed`` sentinel so reruns of the same dep set
   skip resolution. The runtime container now ships the ``uv`` binary so
   consumer images do not need to extend awebo just to add a few deps.
+
+### Changed
+
+- **README**: expanded container examples (AWS creds, `--with` flags, REST
+  catalog / MinIO), added "Orchestrating jobs" section (cron, Fargate,
+  EventBridge, Airflow, Step Functions).
 
 ### Fixed
 

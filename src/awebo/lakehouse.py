@@ -110,6 +110,7 @@ class Lakehouse:
         mode: WriteMode = "append",
         schema: PyIcebergSchema | None = None,
         partition_spec: PyIcebergPartitionSpec | None = None,
+        schema_evolution: bool = True,
     ) -> None:
         """Write ``data`` to an Iceberg table, creating it if missing.
 
@@ -120,15 +121,23 @@ class Lakehouse:
         ``mode`` selects the write semantics:
 
         * ``"append"`` (default) — add rows to the table.
-        * ``"overwrite"`` — replace the entire table contents. Streaming sources
-          (SQL strings, ``RecordBatchReader``, large DataFrames above the
-          streaming threshold) reject this mode with :class:`WriteError`,
-          since whole-table overwrite requires a single materialised payload.
+        * ``"overwrite"`` — replace table contents. When the target table is
+          partitioned with identity transforms, only the partitions present
+          in the incoming data are replaced (*dynamic partition overwrite*).
+          Unpartitioned tables get a full replacement. In-memory sources use
+          ``dynamic_partition_overwrite`` directly. SQL strings use a
+          partition-scoped transactional path (``SELECT DISTINCT`` pre-query
+          + ``delete`` + chunked ``append``). ``RecordBatchReader`` (one-shot)
+          falls back to full replacement.
 
-        ``schema`` and ``partition_spec`` are honoured **only on table create**.
-        If the table already exists they are ignored — schema evolution is out
-        of scope. Pass them through directly from ``pyiceberg.schema.Schema``
-        and ``pyiceberg.partitioning.PartitionSpec``.
+        ``schema`` and ``partition_spec`` are honoured on table create.
+        When the table already exists:
+
+        * ``schema_evolution`` (default ``True``) merges the incoming schema
+          into the table via ``union_by_name`` (adds new columns, widens
+          compatible types). Set to ``False`` to reject schema mismatches.
+        * ``partition_spec`` triggers partition evolution — fields are added
+          or removed to match the desired spec.
         """
         self._writer.write(
             data,
@@ -137,6 +146,7 @@ class Lakehouse:
             mode=mode,
             schema=schema,
             partition_spec=partition_spec,
+            schema_evolution=schema_evolution,
         )
 
     def pyiceberg_catalog(self) -> PyIcebergCatalog:
