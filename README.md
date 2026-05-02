@@ -98,6 +98,54 @@ cat = lake.pyiceberg_catalog()
 tbl = cat.load_table("bronze.events")
 ```
 
+## Container / job runner
+
+`awebo` ships a thin entrypoint that runs a user-supplied Python job against
+the configured `Lakehouse`. Three target shapes are supported:
+
+```bash
+# 1. single .py file
+python -m awebo path/to/job.py arg1 arg2
+
+# 2. a directory containing __main__.py + sibling modules (sibling imports
+#    work because runpy puts the dir on sys.path)
+python -m awebo ./jobs/my_pkg arg1 arg2
+
+# 3. a zipapp .zip whose root contains __main__.py + helpers — same
+#    sibling-import rules apply
+python -m awebo ./dist/bundle.zip arg1 arg2
+```
+
+Files (`.py`, `.zip`) may also be given as an fsspec URI; awebo streams
+them into a private temp dir, then executes in this interpreter:
+
+```bash
+python -m awebo s3://my-bucket/jobs/ingest.py
+python -m awebo s3://my-bucket/jobs/bundle.zip
+python -m awebo gs://my-bucket/jobs/ingest.py
+python -m awebo https://example.com/job.zip
+```
+
+Remote *directories* are not supported (fsspec single-shot fetch). Zip
+your bundle and upload that.
+
+Trailing arguments are forwarded to the job as `sys.argv[1:]`. The
+container image (built by `.github/workflows/publish-ecr.yml`) uses the
+same entrypoint:
+
+```bash
+docker run --rm \
+  -e AWEBO_CATALOG_TYPE=glue -e AWS_REGION=us-east-1 \
+  $AWS_ECR_REPO:latest \
+  s3://my-bucket/jobs/ingest.py
+```
+
+Install the GCS backend separately if you need `gs://`:
+
+```bash
+uv add "awebo[runner]"
+```
+
 ## Architecture
 
 See [`ARCHITECTURE.md`](./ARCHITECTURE.md). High level:
