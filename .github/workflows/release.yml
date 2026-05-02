@@ -45,8 +45,8 @@ jobs:
           gh release create "$ROLLING_TAG" \
             --target "$GITHUB_SHA" \
             --title "awebo $ROLLING_TAG (rolling)" \
-            --prerelease \
-            --notes "Rolling pre-release built from the latest \`main\`. Tag and assets are overwritten on every merge until a stable release is cut.
+            --latest \
+            --notes "Rolling release built from the latest \`main\`. Tag and assets are overwritten on every merge until a stable release is cut.
 
           Install:
 
