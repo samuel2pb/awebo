@@ -134,15 +134,13 @@ lake.to_lake(snapshot, "bronze", "cadastro", mode="overwrite")
 
 ### Schema evolution and type widening
 
-```python
-# Merge new columns and widen compatible types (e.g. int32 → int64)
-lake.to_lake(df_with_new_cols, "bronze", "events", schema_evolution=True)
-```
+Schema evolution is enabled by default — `to_lake` automatically adds new
+columns and widens compatible types (e.g. `int32` → `int64`) via
+PyIceberg's `union_by_name`. To reject schema mismatches instead:
 
-`schema_evolution=True` calls PyIceberg's `union_by_name` under the hood —
-it adds columns that exist in the incoming data but not in the table, and
-widens types where the promotion is safe. Disabled by default to prevent
-accidental schema drift.
+```python
+lake.to_lake(df, "bronze", "events", schema_evolution=False)
+```
 
 Need direct PyIceberg access (snapshot rollback, manifest tables, schema
 introspection)? Use the escape hatch:

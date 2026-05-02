@@ -20,10 +20,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   a scoped `delete`, then chunked `append` inside a single PyIceberg
   `Transaction` — DuckDB handles disk spill so memory stays bounded.
   `RecordBatchReader` (one-shot) falls back to full replacement.
-- **Schema evolution**: `to_lake(..., schema_evolution=True)` merges the
-  incoming schema into an existing table via PyIceberg's `union_by_name` —
-  adds new columns and widens compatible types (e.g. `int32` → `int64`).
-  Disabled by default to prevent accidental schema drift.
+- **Schema evolution**: `to_lake` now merges the incoming schema into an
+  existing table via PyIceberg's `union_by_name` — adds new columns and
+  widens compatible types (e.g. `int32` → `int64`). Enabled by default
+  (`schema_evolution=True`); set to `False` to reject schema mismatches.
 - **Partition evolution**: passing `partition_spec=` on a `to_lake` call
   against an existing table now evolves the partition spec (adds/removes
   fields) instead of silently ignoring it.

@@ -89,7 +89,7 @@ class IcebergWriter:
         mode: WriteMode = "append",
         schema: PyIcebergSchema | None = None,
         partition_spec: PyIcebergPartitionSpec | None = None,
-        schema_evolution: bool = False,
+        schema_evolution: bool = True,
     ) -> None:
         if mode not in _VALID_MODES:
             raise WriteError(f"invalid write mode {mode!r}; expected 'append' or 'overwrite'")
@@ -312,7 +312,7 @@ class IcebergWriter:
         *,
         schema: PyIcebergSchema | None,
         partition_spec: PyIcebergPartitionSpec | None,
-        schema_evolution: bool = False,
+        schema_evolution: bool = True,
     ) -> PyIcebergTable:
         load_table = py_catalog.load_table  # type: ignore[attr-defined]
         create_table = py_catalog.create_table  # type: ignore[attr-defined]

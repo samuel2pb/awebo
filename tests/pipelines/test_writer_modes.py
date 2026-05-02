@@ -272,12 +272,17 @@ def test_schema_evolution_widens_type(lake: Lakehouse) -> None:
     assert out.num_rows == 3
 
 
-def test_schema_evolution_disabled_by_default(lake: Lakehouse) -> None:
-    """Without schema_evolution=True, new columns are not merged (write fails)."""
+def test_schema_evolution_disabled_rejects_new_columns(lake: Lakehouse) -> None:
+    """With schema_evolution=False, new columns are rejected."""
     lake.to_lake(pl.DataFrame({"id": [1]}), database="db", table="noevo")
 
     with pytest.raises(WriteError):
-        lake.to_lake(pl.DataFrame({"id": [2], "extra": ["x"]}), database="db", table="noevo")
+        lake.to_lake(
+            pl.DataFrame({"id": [2], "extra": ["x"]}),
+            database="db",
+            table="noevo",
+            schema_evolution=False,
+        )
 
 
 # -------------------------------------------------------- partition evolution

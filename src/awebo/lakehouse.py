@@ -110,7 +110,7 @@ class Lakehouse:
         mode: WriteMode = "append",
         schema: PyIcebergSchema | None = None,
         partition_spec: PyIcebergPartitionSpec | None = None,
-        schema_evolution: bool = False,
+        schema_evolution: bool = True,
     ) -> None:
         """Write ``data`` to an Iceberg table, creating it if missing.
 
@@ -133,8 +133,9 @@ class Lakehouse:
         ``schema`` and ``partition_spec`` are honoured on table create.
         When the table already exists:
 
-        * ``schema_evolution=True`` merges the incoming schema into the table
-          via ``union_by_name`` (adds new columns, widens compatible types).
+        * ``schema_evolution`` (default ``True``) merges the incoming schema
+          into the table via ``union_by_name`` (adds new columns, widens
+          compatible types). Set to ``False`` to reject schema mismatches.
         * ``partition_spec`` triggers partition evolution — fields are added
           or removed to match the desired spec.
         """
