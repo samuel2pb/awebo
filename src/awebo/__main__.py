@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import logging
 import os
 import re
 import runpy
@@ -225,6 +226,12 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+    )
+    _log = logging.getLogger("awebo.runner")
+
     parser = _build_parser()
     args = parser.parse_args(argv)
 
@@ -241,6 +248,7 @@ def main(argv: list[str] | None = None) -> int:
     with tempfile.TemporaryDirectory(prefix="awebo-") as tmp:
         scratch = Path(tmp)
         script_path = _resolve_uri(args.script, scratch, fallback_name="script.py")
+        _log.info("target: %s", script_path)
         requirement_files: list[Path] = [
             _resolve_uri(uri, scratch, fallback_name="requirements.txt")
             for uri in args.requirements
@@ -249,8 +257,10 @@ def main(argv: list[str] | None = None) -> int:
         merged_extras = [*pep723_deps, *args.extras]
         overlay = _install_extras(merged_extras, requirement_files, args.python_version)
         if overlay is not None:
+            _log.info("installed %d deps to %s", len(merged_extras), overlay)
             sys.path.insert(0, str(overlay))
         sys.argv = [str(script_path), *args.script_args]
+        _log.info("running %s", script_path)
         runpy.run_path(str(script_path), run_name="__main__")
     return 0
 

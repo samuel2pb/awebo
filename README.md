@@ -75,6 +75,7 @@ lake.to_lake(
 uv add awebo            # production
 uv add "awebo[dev]"     # contributors
 uv add "awebo[runner]"  # adds gcsfs for gs:// targets in the job runner
+uv add "awebo[otel]"    # adds opentelemetry-api for OTel span export
 ```
 
 The DuckDB `iceberg` and `httpfs` extensions are required at runtime. In
@@ -104,6 +105,7 @@ image already does this).
 | `AWEBO_S3_REGION` | no | Region the S3 client should advertise. |
 | `AWEBO_STREAMING_THRESHOLD_MB` | no (default `512`) | Auto-stream when sources exceed this size. |
 | `AWEBO_TEMP_DIR` | no | DuckDB spill directory. |
+| `AWEBO_TRACE_MEMORY` | no | `1` to enable `tracemalloc` peak memory reporting on writes. |
 
 Copy [`.env.example`](./.env.example) to `.env` and fill in the values
 you need.
@@ -141,6 +143,42 @@ PyIceberg's `union_by_name`. To reject schema mismatches instead:
 ```python
 lake.to_lake(df, "bronze", "events", schema_evolution=False)
 ```
+
+### Observability
+
+awebo emits structured log events via Python's stdlib `logging` — no
+handlers configured by default; wire them up in your application:
+
+```python
+import logging
+logging.basicConfig(level=logging.DEBUG)
+
+lake = Lakehouse()
+lake.to_lake(df, "bronze", "events")
+# INFO  [awebo.lakehouse] lakehouse ready: catalog=glue name=lake threshold=512MB
+# INFO  [awebo.io.writer] append bronze.events [0.423s]
+```
+
+Enable `tracemalloc` for memory diagnostics (e.g. debugging Fargate OOMs):
+
+```bash
+export AWEBO_TRACE_MEMORY=1
+```
+
+```
+# INFO  [awebo.io.writer] memory: current=12.3MB peak=45.6MB
+# INFO  [awebo.io.writer] append bronze.events [0.423s]
+```
+
+Quick connectivity check:
+
+```python
+lake.health_check()  # {"duckdb": "ok", "catalog": "ok"}
+```
+
+If `opentelemetry-api` is installed (`pip install awebo[otel]`), write
+and query operations automatically emit OTel spans — zero overhead when
+the SDK is absent.
 
 Need direct PyIceberg access (snapshot rollback, manifest tables, schema
 introspection)? Use the escape hatch:

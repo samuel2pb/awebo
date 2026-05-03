@@ -7,6 +7,7 @@ reads, awebo issues DuckDB iceberg ATTACH against the same Glue endpoint so
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 from awebo.catalog.base import CatalogBackend
@@ -17,6 +18,8 @@ if TYPE_CHECKING:
 
     from awebo.auth.base import Credentials
     from awebo.config import CatalogSettings
+
+log = logging.getLogger(__name__)
 
 
 class GlueCatalogBackend(CatalogBackend):
@@ -32,6 +35,8 @@ class GlueCatalogBackend(CatalogBackend):
     def pyiceberg(self, credentials: Credentials) -> PyIcebergCatalog:
         if self._pyiceberg is not None:
             return self._pyiceberg
+
+        log.debug("connecting to Glue catalog %r", self.name)
 
         from pyiceberg.catalog import load_catalog
 
@@ -88,6 +93,7 @@ class GlueCatalogBackend(CatalogBackend):
         existing = {".".join(ns) for ns in catalog.list_namespaces()}
         if namespace in existing:
             return
+        log.debug("creating namespace %r", namespace)
         try:
             catalog.create_namespace(namespace)
         except Exception as exc:

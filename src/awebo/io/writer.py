@@ -33,6 +33,7 @@ handles disk spill so the full dataset is never materialised.
 from __future__ import annotations
 
 import logging
+import time
 from typing import TYPE_CHECKING, Literal
 
 import pyarrow as pa
@@ -95,6 +96,7 @@ class IcebergWriter:
             raise WriteError(f"invalid write mode {mode!r}; expected 'append' or 'overwrite'")
 
         identifier = f"{database}.{table}"
+        _t0 = time.perf_counter()
         self._catalog.ensure_namespace(self._credentials, database)
         py_catalog = self._catalog.pyiceberg(self._credentials)
 
@@ -107,6 +109,7 @@ class IcebergWriter:
                 partition_spec=partition_spec,
                 schema_evolution=schema_evolution,
             )
+            self._log_write_done(mode, identifier, _t0)
             return
 
         reader, arrow_schema = self._coerce_to_reader(data)
@@ -121,6 +124,7 @@ class IcebergWriter:
                 schema_evolution=schema_evolution,
             )
             self._stream_append(tbl, reader, arrow_schema)
+            self._log_write_done(mode, identifier, _t0)
         except Exception as exc:
             raise WriteError(f"iceberg append to {identifier!r} failed: {exc}") from exc
 
@@ -137,6 +141,12 @@ class IcebergWriter:
         schema_evolution: bool,
     ) -> None:
         needs_streaming = self._needs_streaming(data)
+        log.debug(
+            "overwrite %s: streaming=%s source=%s",
+            identifier,
+            needs_streaming,
+            type(data).__name__,
+        )
 
         if needs_streaming:
             self._streaming_overwrite(
@@ -318,12 +328,14 @@ class IcebergWriter:
         create_table = py_catalog.create_table  # type: ignore[attr-defined]
         try:
             tbl: PyIcebergTable = load_table(identifier)
+            log.debug("loaded existing table %s", identifier)
             if schema_evolution:
                 self._evolve_schema(tbl, arrow_schema)
             if partition_spec is not None:
                 self._evolve_partition_spec(tbl, partition_spec)
             return tbl
         except Exception:
+            log.debug("creating table %s", identifier)
             create_kwargs: dict[str, object] = {"identifier": identifier}
             create_kwargs["schema"] = schema if schema is not None else arrow_schema
             if partition_spec is not None:
@@ -363,6 +375,13 @@ class IcebergWriter:
                         update.add_field(source.name, field.transform, field.name)
         except Exception as exc:
             raise WriteError(f"partition evolution failed: {exc}") from exc
+
+    @staticmethod
+    def _log_write_done(mode: str, identifier: str, t0: float) -> None:
+        from awebo._observability import log_peak_memory
+
+        log_peak_memory(log)
+        log.info("%s %s [%.3fs]", mode, identifier, time.perf_counter() - t0)
 
     # ----------------------------------------------------------- helpers
 

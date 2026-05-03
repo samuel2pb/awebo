@@ -9,6 +9,7 @@ to honour the no-D+1 rule.
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 from awebo.exceptions import QueryError
@@ -19,6 +20,8 @@ if TYPE_CHECKING:
 
     from awebo.auth.base import Credentials
     from awebo.catalog.base import CatalogBackend
+
+log = logging.getLogger(__name__)
 
 
 class QueryEngine:
@@ -33,6 +36,7 @@ class QueryEngine:
         self._conn.execute("LOAD httpfs;")
         if temp_dir:
             self._conn.execute(f"PRAGMA temp_directory='{temp_dir}';")
+        log.debug("DuckDB engine initialized")
 
     @property
     def connection(self) -> duckdb.DuckDBPyConnection:
@@ -41,6 +45,7 @@ class QueryEngine:
     def attach_catalog(self, catalog: CatalogBackend, credentials: Credentials) -> None:
         """Run all catalog setup SQL in one batch."""
         statements = catalog.duckdb_attach_sql(credentials)
+        log.debug("attaching catalog (%d statements)", len(statements))
         try:
             for stmt in statements:
                 self._conn.execute(stmt)
@@ -48,6 +53,7 @@ class QueryEngine:
             raise QueryError(f"catalog ATTACH failed: {exc}") from exc
 
     def execute(self, sql: str) -> duckdb.DuckDBPyRelation:
+        log.debug("execute: %.100s", sql)
         try:
             return self._conn.sql(sql)
         except Exception as exc:
@@ -64,4 +70,5 @@ class QueryEngine:
             raise QueryError(f"failed to register {alias!r}: {exc}") from exc
 
     def close(self) -> None:
+        log.debug("closing DuckDB connection")
         self._conn.close()

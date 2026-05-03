@@ -9,6 +9,7 @@ ergonomic verbs ``sql``, ``read_file``, ``to_lake``.
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Self
 
 from awebo.auth.aws import AwsAuthProvider
@@ -31,6 +32,8 @@ if TYPE_CHECKING:
 
     from awebo.auth.base import AuthProvider, Credentials
     from awebo.catalog.base import CatalogBackend
+
+log = logging.getLogger(__name__)
 
 
 class Lakehouse:
@@ -76,6 +79,17 @@ class Lakehouse:
             streaming_threshold_mb=self._config.streaming_threshold_mb,
         )
 
+        if self._config.trace_memory:
+            from awebo._observability import start_memory_tracing
+
+            start_memory_tracing()
+        log.info(
+            "lakehouse ready: catalog=%s name=%s threshold=%dMB",
+            self._config.catalog.type,
+            self._config.catalog.name,
+            self._config.streaming_threshold_mb,
+        )
+
     # ---------------------------------------------------------------- public
     def sql(self, query: str) -> QueryResult:
         """Execute a SQL query against DuckDB and return a lazy result.
@@ -86,7 +100,10 @@ class Lakehouse:
         ATTACH for REST and you must read REST-backed tables via
         ``iceberg_scan('s3://...')`` or :meth:`pyiceberg_catalog`.
         """
-        return QueryResult(self._engine.execute(query))
+        from awebo._observability import otel_span
+
+        with otel_span("awebo.sql", query=query[:80]):
+            return QueryResult(self._engine.execute(query))
 
     def read_file(
         self,
@@ -139,15 +156,18 @@ class Lakehouse:
         * ``partition_spec`` triggers partition evolution — fields are added
           or removed to match the desired spec.
         """
-        self._writer.write(
-            data,
-            database,
-            table,
-            mode=mode,
-            schema=schema,
-            partition_spec=partition_spec,
-            schema_evolution=schema_evolution,
-        )
+        from awebo._observability import otel_span
+
+        with otel_span("awebo.write", table=f"{database}.{table}", mode=mode):
+            self._writer.write(
+                data,
+                database,
+                table,
+                mode=mode,
+                schema=schema,
+                partition_spec=partition_spec,
+                schema_evolution=schema_evolution,
+            )
 
     def pyiceberg_catalog(self) -> PyIcebergCatalog:
         """Return the underlying PyIceberg :class:`Catalog`.
@@ -165,7 +185,23 @@ class Lakehouse:
         """
         return self._catalog.pyiceberg(self._credentials)
 
+    def health_check(self) -> dict[str, str]:
+        """Quick connectivity diagnostic for DuckDB and the catalog."""
+        status: dict[str, str] = {}
+        try:
+            self._engine.execute("SELECT 1")
+            status["duckdb"] = "ok"
+        except Exception as exc:
+            status["duckdb"] = f"error: {exc}"
+        try:
+            self._catalog.pyiceberg(self._credentials).list_namespaces()
+            status["catalog"] = "ok"
+        except Exception as exc:
+            status["catalog"] = f"error: {exc}"
+        return status
+
     def close(self) -> None:
+        log.debug("closing lakehouse")
         self._engine.close()
 
     def __enter__(self) -> Self:
