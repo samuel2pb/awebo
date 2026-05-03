@@ -8,6 +8,7 @@ the file from disk/S3 on demand and respects the streaming threshold.
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 from awebo.exceptions import QueryError
@@ -32,6 +33,8 @@ _EXT_TO_FUNC: dict[str, str] = {
     ".arrow": "read_parquet",  # arrow IPC handled separately if needed
 }
 
+log = logging.getLogger(__name__)
+
 
 class FileReader:
     def __init__(self, engine: QueryEngine) -> None:
@@ -52,6 +55,7 @@ class FileReader:
         options: ReaderOptions | None = None,
     ) -> None:
         func = self.detect_format(path)
+        log.debug("registering %s as %r (reader=%s)", path, alias, func)
         opts_sql = ""
         if options:
             parts = [f"{k}={_render_option(v)}" for k, v in options.items()]

@@ -8,6 +8,25 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Structured logging (`#15`)**: all modules emit structured log events via
+  Python's stdlib `logging` at key lifecycle points — lakehouse init, write
+  completion (with wall-clock duration), auth resolution, catalog connection,
+  schema/partition evolution, streaming decisions. Library-only: callers
+  configure handlers. The `__main__` entrypoint sets up `basicConfig` at
+  INFO level.
+- **Operation timing**: write operations log wall-clock duration at INFO level
+  (e.g. `append bronze.events [0.423s]`).
+- **Runtime memory reporting**: opt-in via `AWEBO_TRACE_MEMORY=1`. Uses
+  `tracemalloc` (nframes=1) to report current/peak memory at write
+  completion. Zero overhead when disabled.
+- **Health check**: `Lakehouse.health_check()` returns a `dict[str, str]`
+  diagnostic — DuckDB connectivity and catalog reachability.
+- **Optional OpenTelemetry**: new `awebo[otel]` extra adds
+  `opentelemetry-api`. Write and query operations emit OTel spans when the
+  SDK is installed; zero overhead otherwise.
+
+### Added
+
 - **Dynamic partition overwrite (`#13`)**: `to_lake(..., mode="overwrite")`
   is now partition-aware. When the target table uses identity partition
   transforms, only the partitions present in the incoming data are replaced

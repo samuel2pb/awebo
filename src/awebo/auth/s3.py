@@ -12,12 +12,15 @@ catalog backends (PyIceberg + DuckDB) read them from there.
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 from awebo.auth.base import AuthProvider, Credentials
 
 if TYPE_CHECKING:
     from awebo.config import S3Settings
+
+log = logging.getLogger(__name__)
 
 
 class S3AuthProvider(AuthProvider):
@@ -30,6 +33,8 @@ class S3AuthProvider(AuthProvider):
     def resolve(self) -> Credentials:
         if self._cached is not None:
             return self._cached
+
+        log.debug("resolving S3 credentials (endpoint=%s)", self._settings.endpoint)
 
         extra: dict[str, str] = {}
         if self._settings.endpoint:

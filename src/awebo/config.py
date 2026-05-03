@@ -121,6 +121,7 @@ class LakehouseConfig:
     rest: RestSettings | None = None
     streaming_threshold_mb: int = DEFAULT_STREAMING_THRESHOLD_MB
     temp_dir: str | None = None
+    trace_memory: bool = False
 
 
 def _require(env: str) -> str:
@@ -202,4 +203,5 @@ def load_config() -> LakehouseConfig:
         rest=rest,
         streaming_threshold_mb=streaming_mb,
         temp_dir=os.getenv("AWEBO_TEMP_DIR"),
+        trace_memory=_bool("AWEBO_TRACE_MEMORY"),
     )

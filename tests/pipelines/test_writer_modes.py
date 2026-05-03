@@ -366,3 +366,12 @@ def test_pyiceberg_catalog_supports_direct_use(lake: Lakehouse) -> None:
     tbl = cat.load_table("logs.runs")
     arrow = tbl.scan().to_arrow()
     assert arrow.num_rows == 3
+
+
+# ------------------------------------------------------- health check
+
+
+def test_health_check_returns_status(lake: Lakehouse) -> None:
+    status = lake.health_check()
+    assert status["duckdb"] == "ok"
+    assert status["catalog"] == "ok"

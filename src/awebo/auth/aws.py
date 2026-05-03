@@ -9,6 +9,7 @@ re-fetching (no D+1).
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 from awebo.auth.base import AuthProvider, Credentials
@@ -16,6 +17,8 @@ from awebo.exceptions import AuthError
 
 if TYPE_CHECKING:
     from awebo.config import AwsSettings
+
+log = logging.getLogger(__name__)
 
 
 class AwsAuthProvider(AuthProvider):
@@ -28,6 +31,8 @@ class AwsAuthProvider(AuthProvider):
     def resolve(self) -> Credentials:
         if self._cached is not None:
             return self._cached
+
+        log.debug("resolving AWS credentials (region=%s)", self._settings.region)
 
         import boto3
         from botocore.exceptions import BotoCoreError, ClientError
@@ -42,6 +47,7 @@ class AwsAuthProvider(AuthProvider):
             )
 
             if self._settings.role_arn:
+                log.debug("assuming role %s", self._settings.role_arn)
                 sts = session.client("sts")
                 resp = sts.assume_role(
                     RoleArn=self._settings.role_arn,
@@ -54,6 +60,7 @@ class AwsAuthProvider(AuthProvider):
                     secret_access_key=creds["SecretAccessKey"],
                     session_token=creds["SessionToken"],
                 )
+                log.debug("credentials resolved via assumed role")
                 return self._cached
 
             chain = session.get_credentials()
@@ -66,6 +73,7 @@ class AwsAuthProvider(AuthProvider):
                 secret_access_key=frozen.secret_key,
                 session_token=frozen.token,
             )
+            log.debug("credentials resolved via default chain")
             return self._cached
         except (BotoCoreError, ClientError) as exc:
             raise AuthError(f"AWS credential resolution failed: {exc}") from exc

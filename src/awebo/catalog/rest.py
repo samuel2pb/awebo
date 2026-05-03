@@ -12,6 +12,7 @@ ATTACH — so credential propagation is batched (no D+1).
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 from awebo.catalog.base import CatalogBackend
@@ -22,6 +23,8 @@ if TYPE_CHECKING:
 
     from awebo.auth.base import Credentials
     from awebo.config import CatalogSettings, RestSettings
+
+log = logging.getLogger(__name__)
 
 
 def _strip_scheme(endpoint: str) -> str:
@@ -48,6 +51,8 @@ class RestCatalogBackend(CatalogBackend):
     def pyiceberg(self, credentials: Credentials) -> PyIcebergCatalog:
         if self._pyiceberg is not None:
             return self._pyiceberg
+
+        log.debug("connecting to REST catalog %r at %s", self.name, self._rest.uri)
 
         from pyiceberg.catalog import load_catalog
 
@@ -128,6 +133,7 @@ class RestCatalogBackend(CatalogBackend):
         existing = {".".join(ns) for ns in catalog.list_namespaces()}
         if namespace in existing:
             return
+        log.debug("creating namespace %r", namespace)
         try:
             catalog.create_namespace(namespace)
         except Exception as exc:
