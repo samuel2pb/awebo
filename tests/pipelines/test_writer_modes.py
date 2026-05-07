@@ -8,6 +8,7 @@ suite, so the production writer path is exercised end-to-end.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, cast
 
 import polars as pl
@@ -15,8 +16,8 @@ import pyarrow as pa
 import pytest
 from pyiceberg.partitioning import PartitionField, PartitionSpec
 from pyiceberg.schema import Schema
-from pyiceberg.transforms import IdentityTransform
-from pyiceberg.types import LongType, NestedField, StringType
+from pyiceberg.transforms import DayTransform, IdentityTransform
+from pyiceberg.types import LongType, NestedField, StringType, TimestamptzType
 
 from awebo.exceptions import WriteError
 
@@ -189,6 +190,114 @@ def test_sql_streaming_overwrite_partition_scoped(lake: Lakehouse) -> None:
 
     assert sorted(year_2023) == [1, 2], "2023 partition should be untouched"
     assert sorted(year_2024) == [30, 40], "2024 partition should be replaced"
+
+
+def test_non_identity_transform_falls_back_to_full_replacement(lake: Lakehouse) -> None:
+    """Non-identity partition (e.g. DayTransform) → full replacement on overwrite."""
+    iceberg_schema = Schema(
+        NestedField(field_id=1, name="ts", field_type=TimestamptzType(), required=False),
+        NestedField(field_id=2, name="value", field_type=LongType(), required=False),
+    )
+    spec = PartitionSpec(
+        PartitionField(source_id=1, field_id=1000, transform=DayTransform(), name="day")
+    )
+    ts_type = pa.timestamp("us", tz="UTC")
+    initial = pa.table(
+        {
+            "ts": pa.array(
+                [datetime(2024, 1, 1, tzinfo=UTC), datetime(2024, 6, 15, tzinfo=UTC)],
+                type=ts_type,
+            ),
+            "value": [1, 2],
+        }
+    )
+    lake.to_lake(
+        initial, database="db", table="daypart", schema=iceberg_schema, partition_spec=spec
+    )
+
+    replacement = pa.table(
+        {
+            "ts": pa.array(
+                [datetime(2024, 6, 15, tzinfo=UTC)],
+                type=ts_type,
+            ),
+            "value": [99],
+        }
+    )
+    lake.to_lake(replacement, database="db", table="daypart", mode="overwrite")
+
+    out = _read_back(lake, "db", "daypart")
+    assert out.num_rows == 1, "non-identity transform → full replacement, not scoped"
+    assert out.column("value").to_pylist() == [99]
+
+
+def test_dynamic_partition_overwrite_three_column_key(lake: Lakehouse) -> None:
+    """Composite partition with 3 identity columns."""
+    iceberg_schema = Schema(
+        NestedField(field_id=1, name="year", field_type=LongType(), required=False),
+        NestedField(field_id=2, name="region", field_type=StringType(), required=False),
+        NestedField(field_id=3, name="category", field_type=StringType(), required=False),
+        NestedField(field_id=4, name="value", field_type=LongType(), required=False),
+    )
+    spec = PartitionSpec(
+        PartitionField(source_id=1, field_id=1000, transform=IdentityTransform(), name="year"),
+        PartitionField(source_id=2, field_id=1001, transform=IdentityTransform(), name="region"),
+        PartitionField(source_id=3, field_id=1002, transform=IdentityTransform(), name="category"),
+    )
+
+    initial = pl.DataFrame(
+        {
+            "year": [2023, 2023, 2024],
+            "region": ["US", "EU", "US"],
+            "category": ["A", "B", "A"],
+            "value": [1, 2, 3],
+        }
+    )
+    lake.to_lake(initial, database="db", table="tri", schema=iceberg_schema, partition_spec=spec)
+
+    update = pl.DataFrame({"year": [2024], "region": ["US"], "category": ["A"], "value": [99]})
+    lake.to_lake(update, database="db", table="tri", mode="overwrite")
+
+    out = _read_back(lake, "db", "tri")
+    rows_by_key = {(r["year"], r["region"], r["category"]): r["value"] for r in out.to_pylist()}
+    assert rows_by_key[(2023, "US", "A")] == 1, "untouched"
+    assert rows_by_key[(2023, "EU", "B")] == 2, "untouched"
+    assert rows_by_key[(2024, "US", "A")] == 99, "replaced"
+
+
+def test_sql_overwrite_multi_column_partition(lake: Lakehouse) -> None:
+    """SQL overwrite on table with 2 identity partitions builds correct filter."""
+    iceberg_schema = Schema(
+        NestedField(field_id=1, name="year", field_type=LongType(), required=False),
+        NestedField(field_id=2, name="region", field_type=StringType(), required=False),
+        NestedField(field_id=3, name="value", field_type=LongType(), required=False),
+    )
+    spec = PartitionSpec(
+        PartitionField(source_id=1, field_id=1000, transform=IdentityTransform(), name="year"),
+        PartitionField(source_id=2, field_id=1001, transform=IdentityTransform(), name="region"),
+    )
+
+    initial = pl.DataFrame(
+        {
+            "year": [2023, 2023, 2024],
+            "region": ["US", "EU", "US"],
+            "value": [1, 2, 3],
+        }
+    )
+    lake.to_lake(initial, database="db", table="sqlmp", schema=iceberg_schema, partition_spec=spec)
+
+    lake.to_lake(
+        "SELECT 2024 AS year, 'US' AS region, 99 AS value",
+        database="db",
+        table="sqlmp",
+        mode="overwrite",
+    )
+
+    out = _read_back(lake, "db", "sqlmp")
+    rows_by_key = {(r["year"], r["region"]): r["value"] for r in out.to_pylist()}
+    assert rows_by_key[(2023, "US")] == 1, "2023/US untouched"
+    assert rows_by_key[(2023, "EU")] == 2, "2023/EU untouched"
+    assert rows_by_key[(2024, "US")] == 99, "2024/US replaced"
 
 
 # ----------------------------------------------------- explicit schema/partition

@@ -168,7 +168,7 @@ class IcebergWriter:
                     partition_spec=partition_spec,
                     schema_evolution=schema_evolution,
                 )
-                if tbl.spec().fields:
+                if self._identity_partition_columns(tbl):
                     tbl.dynamic_partition_overwrite(arrow_table)
                 else:
                     tbl.overwrite(arrow_table)

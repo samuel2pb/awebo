@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING
 
 from pyiceberg.catalog import load_catalog
 
-from awebo.catalog.base import CatalogBackend
+from awebo.catalog.base import AttachSpec, CatalogBackend
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -49,13 +49,6 @@ class LocalIcebergCatalogBackend(CatalogBackend):
             )
         return self._pyiceberg
 
-    def duckdb_attach_sql(self, credentials: Credentials) -> list[str]:
+    def duckdb_attach_sql(self, credentials: Credentials) -> AttachSpec:
         del credentials
-        return []
-
-    def ensure_namespace(self, credentials: Credentials, namespace: str) -> None:
-        cat = self.pyiceberg(credentials)
-        existing = {".".join(ns) for ns in cat.list_namespaces()}
-        if namespace in existing:
-            return
-        cat.create_namespace(namespace)
+        return AttachSpec()

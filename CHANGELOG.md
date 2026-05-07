@@ -6,6 +6,37 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **Typed S3 credentials**: `Credentials.s3: S3Credentials | None` replaces
+  the untyped `extra` dict for S3 endpoint/path-style config. Producers
+  (auth providers) and consumers (catalog backends) now get compile-time
+  safety instead of magic string keys. `extra` retained for future providers.
+- **`AttachSpec` typed return**: `CatalogBackend.duckdb_attach_sql()` returns
+  a typed `AttachSpec(secrets, attach)` instead of `list[str]`. Callers
+  handle secrets and attach separately; REST backend explicitly signals
+  `attach=None`.
+- **Config validation centralized**: all catalog-specific validation
+  (warehouse for Glue, URI/warehouse for REST) now lives solely in
+  `load_config()`. Redundant checks removed from backend constructors
+  and `Lakehouse._build_catalog()`.
+- **`ensure_namespace()` shared implementation**: default implementation
+  on `CatalogBackend` base class eliminates identical copies in Glue,
+  REST, and local test backends.
+
+### Added
+
+- **`LakehouseBuilder`**: explicit builder pattern for composing Lakehouse
+  with `.with_auth()` / `.with_catalog()` / `.build()`. Existing
+  `Lakehouse(config, catalog=, auth=)` constructor remains as convenience.
+
+### Fixed
+
+- **Non-identity partition overwrite**: tables with non-identity partition
+  transforms (e.g. `DayTransform`) now correctly fall back to full
+  replacement via `tbl.overwrite()` instead of calling
+  `dynamic_partition_overwrite()` which PyIceberg rejects.
+
 ### Added
 
 - **Structured logging (`#15`)**: all modules emit structured log events via

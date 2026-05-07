@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from awebo.catalog.base import CatalogBackend
+from awebo.catalog.base import AttachSpec, CatalogBackend
 from awebo.exceptions import CatalogError
 
 if TYPE_CHECKING:
@@ -66,6 +66,16 @@ class RestCatalogBackend(CatalogBackend):
         if self._rest.oauth_credential:
             props["credential"] = self._rest.oauth_credential
 
+        self._add_credential_props(props, credentials)
+
+        try:
+            self._pyiceberg = load_catalog(self.name, **props)
+        except Exception as exc:
+            raise CatalogError(f"failed to load REST catalog {self.name!r}: {exc}") from exc
+        return self._pyiceberg
+
+    @staticmethod
+    def _add_credential_props(props: dict[str, str], credentials: Credentials) -> None:
         if credentials.region:
             props["s3.region"] = credentials.region
         if credentials.access_key_id:
@@ -74,44 +84,28 @@ class RestCatalogBackend(CatalogBackend):
             props["s3.secret-access-key"] = credentials.secret_access_key
         if credentials.session_token:
             props["s3.session-token"] = credentials.session_token
-
+        if credentials.s3:
+            if credentials.s3.endpoint:
+                props["s3.endpoint"] = credentials.s3.endpoint
+            if credentials.s3.path_style:
+                props["s3.path-style-access"] = "true"
         if credentials.extra:
             for key, value in credentials.extra.items():
                 props[key] = value
 
-        try:
-            self._pyiceberg = load_catalog(self.name, **props)
-        except Exception as exc:
-            raise CatalogError(f"failed to load REST catalog {self.name!r}: {exc}") from exc
-        return self._pyiceberg
+    def duckdb_attach_sql(self, credentials: Credentials) -> AttachSpec:
+        """Return DuckDB secret for S3 object-store reads.
 
-    def duckdb_attach_sql(self, credentials: Credentials) -> list[str]:
-        """Return DuckDB statements needed before query execution.
-
-        The DuckDB iceberg extension (as of 1.5.x) only accepts
-        ``ENDPOINT_TYPE`` values of ``'glue'`` and ``'s3_tables'`` — REST
-        attach is not implemented yet. So this backend deliberately skips
-        ATTACH and only registers an S3 secret for object-store reads.
-
-        Consequences:
-
-        * Catalog-qualified SQL like ``select * from <name>.<ns>.<tbl>`` is
-          unavailable on REST.
-        * Direct iceberg scans (``select * from iceberg_scan('s3://...')``)
-          and pyiceberg-driven reads (``lake.pyiceberg_catalog().load_table(
-          ...).scan().to_arrow()``) still work and benefit from the secret.
-        * Writes through ``to_lake`` are unaffected — they go through
-          PyIceberg directly.
-
-        When DuckDB grows native REST attach, lift this restriction by
-        emitting the ``ATTACH '<uri>' AS <name> (TYPE iceberg, ...)`` here.
+        DuckDB iceberg 1.5.x has no REST endpoint type, so ``attach`` is
+        always ``None``. Catalog-qualified SQL is unavailable on REST;
+        use ``iceberg_scan('s3://...')`` or ``lake.pyiceberg_catalog()``.
         """
         secret_parts: list[str] = ["TYPE s3"]
-        endpoint = (credentials.extra or {}).get("s3.endpoint")
-        if endpoint:
-            secret_parts.append(f"ENDPOINT '{_strip_scheme(endpoint)}'")
-            secret_parts.append(f"USE_SSL {'TRUE' if _is_https(endpoint) else 'FALSE'}")
-        if (credentials.extra or {}).get("s3.path-style-access") == "true":
+        s3 = credentials.s3
+        if s3 and s3.endpoint:
+            secret_parts.append(f"ENDPOINT '{_strip_scheme(s3.endpoint)}'")
+            secret_parts.append(f"USE_SSL {'TRUE' if _is_https(s3.endpoint) else 'FALSE'}")
+        if s3 and s3.path_style:
             secret_parts.append("URL_STYLE 'path'")
         if credentials.region:
             secret_parts.append(f"REGION '{credentials.region}'")
@@ -122,19 +116,8 @@ class RestCatalogBackend(CatalogBackend):
         if credentials.session_token:
             secret_parts.append(f"SESSION_TOKEN '{credentials.session_token}'")
 
-        # Empty secret is rejected by DuckDB; only emit when we have S3 props.
         if len(secret_parts) <= 1:
-            return []
+            return AttachSpec()
         secret_name = f"awebo_{self.name}_s3"
-        return [f"CREATE OR REPLACE SECRET {secret_name} ({', '.join(secret_parts)});"]
-
-    def ensure_namespace(self, credentials: Credentials, namespace: str) -> None:
-        catalog = self.pyiceberg(credentials)
-        existing = {".".join(ns) for ns in catalog.list_namespaces()}
-        if namespace in existing:
-            return
-        log.debug("creating namespace %r", namespace)
-        try:
-            catalog.create_namespace(namespace)
-        except Exception as exc:
-            raise CatalogError(f"failed to create namespace {namespace!r}: {exc}") from exc
+        sql = f"CREATE OR REPLACE SECRET {secret_name} ({', '.join(secret_parts)});"
+        return AttachSpec(secrets=[sql])

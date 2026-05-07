@@ -43,12 +43,18 @@ class QueryEngine:
         return self._conn
 
     def attach_catalog(self, catalog: CatalogBackend, credentials: Credentials) -> None:
-        """Run all catalog setup SQL in one batch."""
-        statements = catalog.duckdb_attach_sql(credentials)
-        log.debug("attaching catalog (%d statements)", len(statements))
+        """Run catalog secrets + attach in order."""
+        spec = catalog.duckdb_attach_sql(credentials)
+        log.debug(
+            "attaching catalog (secrets=%d attach=%s)",
+            len(spec.secrets),
+            spec.attach is not None,
+        )
         try:
-            for stmt in statements:
-                self._conn.execute(stmt)
+            for secret in spec.secrets:
+                self._conn.execute(secret)
+            if spec.attach is not None:
+                self._conn.execute(spec.attach)
         except Exception as exc:
             raise QueryError(f"catalog ATTACH failed: {exc}") from exc
 

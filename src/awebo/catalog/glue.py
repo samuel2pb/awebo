@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from awebo.catalog.base import CatalogBackend
+from awebo.catalog.base import AttachSpec, CatalogBackend
 from awebo.exceptions import CatalogError
 
 if TYPE_CHECKING:
@@ -26,8 +26,6 @@ class GlueCatalogBackend(CatalogBackend):
     type = "glue"
 
     def __init__(self, settings: CatalogSettings) -> None:
-        if settings.warehouse is None:
-            raise CatalogError("glue catalog requires a warehouse S3 URI")
         self._settings = settings
         self.name = settings.name
         self._pyiceberg: PyIcebergCatalog | None = None
@@ -63,9 +61,8 @@ class GlueCatalogBackend(CatalogBackend):
             raise CatalogError(f"failed to load Glue catalog {self.name!r}: {exc}") from exc
         return self._pyiceberg
 
-    def duckdb_attach_sql(self, credentials: Credentials) -> list[str]:
+    def duckdb_attach_sql(self, credentials: Credentials) -> AttachSpec:
         secret_name = f"awebo_{self.name}_s3"
-        # Build a single CREATE SECRET + single ATTACH; intentionally batched.
         secret_parts = ["TYPE s3"]
         if credentials.region:
             secret_parts.append(f"REGION '{credentials.region}'")
@@ -78,23 +75,8 @@ class GlueCatalogBackend(CatalogBackend):
 
         secret_sql = f"CREATE OR REPLACE SECRET {secret_name} ({', '.join(secret_parts)});"
 
-        # DuckDB's Glue ATTACH path is the federation identifier ('',
-        # account_id, or account_id:catalog), not the S3 warehouse URI.
-        # `:` resolves to the caller's current account + default catalog,
-        # which is what every awebo deployment wants by default.
         glue_path = self._settings.properties.get("glue_catalog_id", ":")
         attach_props = ["TYPE iceberg", "ENDPOINT_TYPE 'glue'"]
         attach_sql = f"ATTACH '{glue_path}' AS {self.name} ({', '.join(attach_props)});"
 
-        return [secret_sql, attach_sql]
-
-    def ensure_namespace(self, credentials: Credentials, namespace: str) -> None:
-        catalog = self.pyiceberg(credentials)
-        existing = {".".join(ns) for ns in catalog.list_namespaces()}
-        if namespace in existing:
-            return
-        log.debug("creating namespace %r", namespace)
-        try:
-            catalog.create_namespace(namespace)
-        except Exception as exc:
-            raise CatalogError(f"failed to create namespace {namespace!r}: {exc}") from exc
+        return AttachSpec(secrets=[secret_sql], attach=attach_sql)
