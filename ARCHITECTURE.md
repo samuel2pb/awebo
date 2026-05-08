@@ -44,8 +44,19 @@ src/awebo/
 │   ├── reader.py        #   FileReader — autodetects format, registers a DuckDB VIEW
 │   └── writer.py        #   IcebergWriter — auto-stream when payload > threshold
 │
-└── streaming/           # FEATURE: Arrow batch helpers shared by reader+writer
-    └── batches.py       #   estimate_size_mb, iter_batches_from_*
+├── streaming/           # FEATURE: Arrow batch helpers shared by reader+writer
+│   └── batches.py       #   estimate_size_mb, iter_batches_from_*
+│
+├── lineage/             # FEATURE: OpenLineage event emission
+│   ├── emitter.py       #   LineageEmitter protocol + NoopEmitter + HttpEmitter
+│   ├── events.py        #   RunEvent construction helpers (write_start/complete/fail)
+│   ├── factory.py       #   create_emitter() — auto-selects based on config
+│   ├── s3.py            #   S3Emitter — persists events as JSON to S3
+│   └── composite.py     #   CompositeEmitter — fans out to multiple children
+│
+└── quality/             # FEATURE: pluggable data quality testing
+    ├── types.py         #   QualityCheck, QualitySuite, CheckResult, QualityResult
+    └── runner.py        #   QualityRunner protocol + DuckDBSQLRunner
 ```
 
 `tests/` mirrors this structure exactly. When adding a feature, add the
@@ -61,6 +72,8 @@ tests under the same package name.
 | Tune streaming threshold or batch size | `src/awebo/streaming/batches.py` and `src/awebo/config.py` |
 | Add a new file format auto-detection | `src/awebo/io/reader.py` (`_EXT_TO_FUNC` table) |
 | Change how DuckDB is configured | `src/awebo/query/engine.py` |
+| Add a lineage emitter backend | `src/awebo/lineage/<name>.py` + register in `factory.create_emitter` |
+| Add quality check capabilities | `src/awebo/quality/runner.py` |
 
 ## Key invariants
 
@@ -86,6 +99,10 @@ tests under the same package name.
 6. **No D+1 (N+1) API patterns.** When a feature needs the same data
    twice, fetch once and pass it down. Anywhere you see a loop calling an
    external API, treat it as a bug.
+
+7. **Lineage never breaks pipelines.** Every `emit()` call is wrapped
+   in try/except — failures log a warning, never raise. Lineage is
+   observability, not critical path.
 
 ## Engine boundaries (data flow)
 

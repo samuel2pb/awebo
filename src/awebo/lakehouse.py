@@ -32,8 +32,48 @@ if TYPE_CHECKING:
 
     from awebo.auth.base import AuthProvider, Credentials
     from awebo.catalog.base import CatalogBackend
+    from awebo.lineage.emitter import LineageEmitter
 
 log = logging.getLogger(__name__)
+
+
+class LakehouseBuilder:
+    """Explicit composition of Lakehouse components.
+
+    Use when you need fine-grained control over which auth provider and
+    catalog backend are wired. For the common case, ``Lakehouse(config)``
+    still works as a shortcut.
+    """
+
+    def __init__(self, config: LakehouseConfig | None = None) -> None:
+        self._config = config or load_config()
+        self._auth: AuthProvider | None = None
+        self._catalog: CatalogBackend | None = None
+        self._emitter: LineageEmitter | None = None
+
+    def with_auth(self, auth: AuthProvider) -> Self:
+        self._auth = auth
+        return self
+
+    def with_catalog(self, catalog: CatalogBackend) -> Self:
+        self._catalog = catalog
+        return self
+
+    def with_emitter(self, emitter: LineageEmitter) -> Self:
+        self._emitter = emitter
+        return self
+
+    def build(self) -> Lakehouse:
+        if self._auth is None:
+            raise ValueError("auth provider required — call .with_auth() before .build()")
+        if self._catalog is None:
+            raise ValueError("catalog backend required — call .with_catalog() before .build()")
+        return Lakehouse(
+            self._config,
+            catalog=self._catalog,
+            auth=self._auth,
+            emitter=self._emitter,
+        )
 
 
 class Lakehouse:
@@ -54,6 +94,7 @@ class Lakehouse:
         *,
         catalog: CatalogBackend | None = None,
         auth: AuthProvider | None = None,
+        emitter: LineageEmitter | None = None,
     ) -> None:
         """Wire a Lakehouse.
 
@@ -71,12 +112,20 @@ class Lakehouse:
         self._engine = QueryEngine(temp_dir=self._config.temp_dir)
         self._engine.attach_catalog(self._catalog, self._credentials)
 
+        if emitter is None:
+            from awebo.lineage.factory import create_emitter
+
+            self._emitter: LineageEmitter = create_emitter(self._config.lineage)
+        else:
+            self._emitter = emitter
         self._reader = FileReader(self._engine)
         self._writer = IcebergWriter(
             engine=self._engine,
             catalog=self._catalog,
             credentials=self._credentials,
             streaming_threshold_mb=self._config.streaming_threshold_mb,
+            emitter=self._emitter,
+            lineage_namespace=self._config.lineage.namespace,
         )
 
         if self._config.trace_memory:
@@ -229,7 +278,6 @@ class Lakehouse:
         if config.catalog.type == "glue":
             return GlueCatalogBackend(config.catalog)
         if config.catalog.type == "rest":
-            if config.rest is None:
-                raise ConfigError("rest catalog requires AWEBO_REST_URI / AWEBO_REST_WAREHOUSE")
+            assert config.rest is not None  # guaranteed by load_config()
             return RestCatalogBackend(config.catalog, config.rest)
         raise ConfigError(f"unsupported catalog type: {config.catalog.type!r}")

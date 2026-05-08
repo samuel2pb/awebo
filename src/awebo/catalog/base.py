@@ -12,13 +12,31 @@ the backend exposes them as two methods rather than leaking implementation.
 
 from __future__ import annotations
 
+import logging
 from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
+
+from awebo.exceptions import CatalogError
 
 if TYPE_CHECKING:
     from pyiceberg.catalog import Catalog as PyIcebergCatalog
 
     from awebo.auth.base import Credentials
+
+log = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class AttachSpec:
+    """Typed return from :meth:`CatalogBackend.duckdb_attach_sql`.
+
+    Separates DuckDB secret creation from catalog ATTACH so callers
+    handle each phase explicitly rather than iterating opaque SQL strings.
+    """
+
+    secrets: list[str] = field(default_factory=list)
+    attach: str | None = None
 
 
 class CatalogBackend(ABC):
@@ -36,14 +54,22 @@ class CatalogBackend(ABC):
         """
 
     @abstractmethod
-    def duckdb_attach_sql(self, credentials: Credentials) -> list[str]:
-        """Return the DuckDB SQL statements needed before ATTACH.
+    def duckdb_attach_sql(self, credentials: Credentials) -> AttachSpec:
+        """Return DuckDB secret + attach statements for catalog setup.
 
-        Typically: secret creation + ``ATTACH '<warehouse>' AS <name>
-        (TYPE iceberg, ...);``. Returned as a list so the caller can run them
-        in one ``executemany``-style batch (no D+1).
+        ``secrets`` are executed first (CREATE SECRET), then ``attach``
+        (ATTACH ... TYPE iceberg). REST backends return ``attach=None``
+        because DuckDB iceberg 1.5.x does not support REST ATTACH.
         """
 
-    @abstractmethod
     def ensure_namespace(self, credentials: Credentials, namespace: str) -> None:
         """Create the namespace (database) if it does not exist."""
+        catalog = self.pyiceberg(credentials)
+        existing = {".".join(ns) for ns in catalog.list_namespaces()}
+        if namespace in existing:
+            return
+        log.debug("creating namespace %r", namespace)
+        try:
+            catalog.create_namespace(namespace)
+        except Exception as exc:
+            raise CatalogError(f"failed to create namespace {namespace!r}: {exc}") from exc

@@ -17,11 +17,14 @@ from tests._fixtures.catalog import LocalIcebergCatalogBackend
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from awebo.lineage.emitter import LineageEmitter
+
 
 def make_test_lakehouse(
     tmp_path: Path,
     *,
     streaming_threshold_mb: int = 1,
+    emitter: LineageEmitter | None = None,
 ) -> Lakehouse:
     """Build an offline Lakehouse rooted at ``tmp_path``.
 
@@ -41,4 +44,4 @@ def make_test_lakehouse(
     )
     catalog = LocalIcebergCatalogBackend("test_lake", warehouse)
     auth = NoopAuthProvider()
-    return Lakehouse(config, catalog=catalog, auth=auth)
+    return Lakehouse(config, catalog=catalog, auth=auth, emitter=emitter)

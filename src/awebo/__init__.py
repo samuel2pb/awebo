@@ -13,7 +13,7 @@ from awebo.exceptions import (
     QueryError,
     WriteError,
 )
-from awebo.lakehouse import Lakehouse
+from awebo.lakehouse import Lakehouse, LakehouseBuilder
 from awebo.query.result import QueryResult
 
 __all__ = [
@@ -22,6 +22,7 @@ __all__ = [
     "CatalogError",
     "ConfigError",
     "Lakehouse",
+    "LakehouseBuilder",
     "QueryError",
     "QueryResult",
     "WriteError",

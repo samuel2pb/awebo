@@ -8,6 +8,61 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **OpenLineage event emission (`#18`)**: new `awebo.lineage` module with
+  pluggable `LineageEmitter` protocol, `HttpEmitter` (wraps
+  `openlineage-python` transport), and `NoopEmitter` (default when
+  disabled). `IcebergWriter` emits `START` / `COMPLETE` / `FAIL`
+  `RunEvent`s around every write operation. Emission failures log a
+  warning and never break pipelines. Config via `AWEBO_LINEAGE_ENABLED`,
+  `AWEBO_LINEAGE_URL`, `AWEBO_LINEAGE_API_KEY`, `AWEBO_LINEAGE_NAMESPACE`.
+  New `awebo[lineage]` optional extra adds `openlineage-python`.
+- **S3 lineage fallback (`#19`)**: `S3Emitter` persists OpenLineage
+  `RunEvent` JSON to S3 (`{prefix}/{namespace}/{job}/{run_id}/{type}_{ts}.json`).
+  `CompositeEmitter` fans out to multiple children with per-child failure
+  isolation. When both HTTP and S3 are enabled, `create_emitter()` auto-
+  constructs a `CompositeEmitter`. Config via `AWEBO_LINEAGE_S3_ENABLED`,
+  `AWEBO_LINEAGE_S3_BUCKET`, `AWEBO_LINEAGE_S3_PREFIX`.
+- **Data quality testing (`#20`)**: new `awebo.quality` module with
+  `QualityCheck`, `QualitySuite`, `CheckResult`, `QualityResult`
+  dataclasses and `QualityRunner` protocol. `DuckDBSQLRunner` executes
+  SQL checks against DuckDB — `query` returning 0 rows = pass, >0 = fail.
+  Warning-severity failures don't fail the suite. Each check is timed.
+  On completion, emits an OpenLineage `DataQualityAssertionsDatasetFacet`
+  via the configured `LineageEmitter`.
+
+### Changed
+
+- **Typed S3 credentials**: `Credentials.s3: S3Credentials | None` replaces
+  the untyped `extra` dict for S3 endpoint/path-style config. Producers
+  (auth providers) and consumers (catalog backends) now get compile-time
+  safety instead of magic string keys. `extra` retained for future providers.
+- **`AttachSpec` typed return**: `CatalogBackend.duckdb_attach_sql()` returns
+  a typed `AttachSpec(secrets, attach)` instead of `list[str]`. Callers
+  handle secrets and attach separately; REST backend explicitly signals
+  `attach=None`.
+- **Config validation centralized**: all catalog-specific validation
+  (warehouse for Glue, URI/warehouse for REST) now lives solely in
+  `load_config()`. Redundant checks removed from backend constructors
+  and `Lakehouse._build_catalog()`.
+- **`ensure_namespace()` shared implementation**: default implementation
+  on `CatalogBackend` base class eliminates identical copies in Glue,
+  REST, and local test backends.
+
+### Added
+
+- **`LakehouseBuilder`**: explicit builder pattern for composing Lakehouse
+  with `.with_auth()` / `.with_catalog()` / `.build()`. Existing
+  `Lakehouse(config, catalog=, auth=)` constructor remains as convenience.
+
+### Fixed
+
+- **Non-identity partition overwrite**: tables with non-identity partition
+  transforms (e.g. `DayTransform`) now correctly fall back to full
+  replacement via `tbl.overwrite()` instead of calling
+  `dynamic_partition_overwrite()` which PyIceberg rejects.
+
+### Added
+
 - **Structured logging (`#15`)**: all modules emit structured log events via
   Python's stdlib `logging` at key lifecycle points — lakehouse init, write
   completion (with wall-clock duration), auth resolution, catalog connection,

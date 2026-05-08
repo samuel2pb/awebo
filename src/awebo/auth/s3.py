@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from awebo.auth.base import AuthProvider, Credentials
+from awebo.auth.base import AuthProvider, Credentials, S3Credentials
 
 if TYPE_CHECKING:
     from awebo.config import S3Settings
@@ -36,16 +36,16 @@ class S3AuthProvider(AuthProvider):
 
         log.debug("resolving S3 credentials (endpoint=%s)", self._settings.endpoint)
 
-        extra: dict[str, str] = {}
-        if self._settings.endpoint:
-            extra["s3.endpoint"] = self._settings.endpoint
-        if self._settings.path_style:
-            extra["s3.path-style-access"] = "true"
-
         self._cached = Credentials(
             region=self._settings.region,
             access_key_id=self._settings.access_key_id,
             secret_access_key=self._settings.secret_access_key,
-            extra=extra or None,
+            s3=S3Credentials(
+                endpoint=self._settings.endpoint,
+                path_style=self._settings.path_style,
+                access_key_id=self._settings.access_key_id,
+                secret_access_key=self._settings.secret_access_key,
+                region=self._settings.region,
+            ),
         )
         return self._cached

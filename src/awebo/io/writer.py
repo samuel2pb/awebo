@@ -54,6 +54,7 @@ if TYPE_CHECKING:
 
     from awebo.auth.base import Credentials
     from awebo.catalog.base import CatalogBackend
+    from awebo.lineage.emitter import LineageEmitter
     from awebo.query.engine import QueryEngine
 
 type WriteSource = "pl.DataFrame | pa.Table | pa.RecordBatchReader | str"
@@ -74,12 +75,21 @@ class IcebergWriter:
         credentials: Credentials,
         streaming_threshold_mb: int,
         append_chunk_rows: int = DEFAULT_APPEND_CHUNK_ROWS,
+        emitter: LineageEmitter | None = None,
+        lineage_namespace: str = "awebo",
     ) -> None:
         self._engine = engine
         self._catalog = catalog
         self._credentials = credentials
         self._threshold_mb = streaming_threshold_mb
         self._append_chunk_rows = append_chunk_rows
+        self._lineage_namespace = lineage_namespace
+        if emitter is None:
+            from awebo.lineage.emitter import NoopEmitter
+
+            self._emitter: LineageEmitter = NoopEmitter()
+        else:
+            self._emitter = emitter
 
     def write(
         self,
@@ -96,25 +106,28 @@ class IcebergWriter:
             raise WriteError(f"invalid write mode {mode!r}; expected 'append' or 'overwrite'")
 
         identifier = f"{database}.{table}"
+        run_id = self._new_run_id()
+        self._emit_start(identifier, run_id)
         _t0 = time.perf_counter()
-        self._catalog.ensure_namespace(self._credentials, database)
-        py_catalog = self._catalog.pyiceberg(self._credentials)
-
-        if mode == "overwrite":
-            self._overwrite(
-                data,
-                py_catalog,
-                identifier,
-                schema=schema,
-                partition_spec=partition_spec,
-                schema_evolution=schema_evolution,
-            )
-            self._log_write_done(mode, identifier, _t0)
-            return
-
-        reader, arrow_schema = self._coerce_to_reader(data)
 
         try:
+            self._catalog.ensure_namespace(self._credentials, database)
+            py_catalog = self._catalog.pyiceberg(self._credentials)
+
+            if mode == "overwrite":
+                self._overwrite(
+                    data,
+                    py_catalog,
+                    identifier,
+                    schema=schema,
+                    partition_spec=partition_spec,
+                    schema_evolution=schema_evolution,
+                )
+                self._log_write_done(mode, identifier, _t0)
+                self._emit_complete(identifier, run_id)
+                return
+
+            reader, arrow_schema = self._coerce_to_reader(data)
             tbl = self._load_or_create(
                 py_catalog,
                 identifier,
@@ -125,7 +138,12 @@ class IcebergWriter:
             )
             self._stream_append(tbl, reader, arrow_schema)
             self._log_write_done(mode, identifier, _t0)
+            self._emit_complete(identifier, run_id)
+        except WriteError:
+            self._emit_fail(identifier, run_id)
+            raise
         except Exception as exc:
+            self._emit_fail(identifier, run_id)
             raise WriteError(f"iceberg append to {identifier!r} failed: {exc}") from exc
 
     # --------------------------------------------------------------- overwrite
@@ -168,7 +186,7 @@ class IcebergWriter:
                     partition_spec=partition_spec,
                     schema_evolution=schema_evolution,
                 )
-                if tbl.spec().fields:
+                if self._identity_partition_columns(tbl):
                     tbl.dynamic_partition_overwrite(arrow_table)
                 else:
                     tbl.overwrite(arrow_table)
@@ -382,6 +400,38 @@ class IcebergWriter:
 
         log_peak_memory(log)
         log.info("%s %s [%.3fs]", mode, identifier, time.perf_counter() - t0)
+
+    # ----------------------------------------------------------- lineage
+
+    @staticmethod
+    def _new_run_id() -> str:
+        from openlineage.client.uuid import generate_new_uuid
+
+        return str(generate_new_uuid())
+
+    def _emit_start(self, identifier: str, run_id: str) -> None:
+        try:
+            from awebo.lineage.events import write_start
+
+            self._emitter.emit(write_start(self._lineage_namespace, identifier, run_id))
+        except Exception:
+            log.warning("lineage START emission failed for %s", identifier, exc_info=True)
+
+    def _emit_complete(self, identifier: str, run_id: str) -> None:
+        try:
+            from awebo.lineage.events import write_complete
+
+            self._emitter.emit(write_complete(self._lineage_namespace, identifier, run_id))
+        except Exception:
+            log.warning("lineage COMPLETE emission failed for %s", identifier, exc_info=True)
+
+    def _emit_fail(self, identifier: str, run_id: str) -> None:
+        try:
+            from awebo.lineage.events import write_fail
+
+            self._emitter.emit(write_fail(self._lineage_namespace, identifier, run_id))
+        except Exception:
+            log.warning("lineage FAIL emission failed for %s", identifier, exc_info=True)
 
     # ----------------------------------------------------------- helpers
 

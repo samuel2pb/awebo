@@ -55,7 +55,9 @@ src/awebo/
 ├── catalog/         # CatalogBackend ABC + GlueCatalogBackend
 ├── query/           # DuckDB QueryEngine + lazy QueryResult
 ├── io/              # FileReader (autodetect format) + IcebergWriter (auto-stream)
-└── streaming/       # Arrow batch helpers shared by reader+writer
+├── streaming/       # Arrow batch helpers shared by reader+writer
+├── lineage/         # LineageEmitter protocol + Http/S3/Composite/Noop emitters
+└── quality/         # QualityRunner protocol + DuckDBSQLRunner
 ```
 
 `tests/` mirrors this structure exactly.
@@ -117,6 +119,8 @@ src/awebo/
 | Tune streaming threshold or batch size | `src/awebo/streaming/batches.py` and `src/awebo/config.py` |
 | Add a new file format auto-detection | `src/awebo/io/reader.py` (`_EXT_TO_FUNC` table) |
 | Change DuckDB configuration | `src/awebo/query/engine.py` |
+| Add a lineage emitter backend | `src/awebo/lineage/<name>.py` + register in `factory.create_emitter` |
+| Add quality check capabilities | `src/awebo/quality/runner.py` |
 
 ## Tooling notes
 
@@ -160,3 +164,32 @@ When you add code:
 
 Run `make check` before pushing — it gates lint, format, and types in
 one shot.
+
+## TDD workflow (vertical slices)
+
+All feature work follows test-driven development with **vertical slices**:
+one test → one implementation → repeat. Never write all tests first then all
+implementation (horizontal slicing — produces brittle tests).
+
+- Tests verify **behavior through public interfaces**, not implementation.
+- No mocking internal collaborators — mock at system boundaries only
+  (external APIs, filesystems).
+- Each test reads like a specification: "user can X" or "system does Y when Z".
+- Tests must survive internal refactors — if you rename a private function
+  and a test breaks, that test was testing implementation.
+- Use the `tests/_fixtures/` catalog backend for pipeline tests; verify
+  writes by re-loading via PyIceberg (`_read_back` pattern).
+
+## Architecture principles
+
+- **Deep modules**: small interface, deep implementation, high leverage.
+  Prefer one class that does a lot behind a simple API over many thin
+  pass-through wrappers.
+- **Deletion test**: imagine deleting a module. If complexity scatters
+  across N callers, it was earning its keep. If complexity vanishes, it
+  was pass-through — consider inlining.
+- **Seams**: one adapter = hypothetical seam. Two adapters = real seam.
+  Don't create abstractions until you have two concrete implementations.
+- **Injection over construction**: pass dependencies in, don't build them
+  internally. `Lakehouse.__init__` accepts `catalog=`, `auth=` for this
+  reason. New subsystems (lineage, quality) follow the same pattern.

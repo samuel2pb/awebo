@@ -16,6 +16,21 @@ from dataclasses import dataclass
 
 
 @dataclass(frozen=True, slots=True)
+class S3Credentials:
+    """Typed S3-compatible object-store credentials.
+
+    Replaces the untyped ``extra`` dict for S3 endpoint/path-style config
+    so producers (auth) and consumers (catalog backends) get compile-time safety.
+    """
+
+    endpoint: str | None = None
+    path_style: bool = False
+    access_key_id: str | None = None
+    secret_access_key: str | None = None
+    region: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class Credentials:
     """Cloud-agnostic credential bundle.
 
@@ -27,6 +42,7 @@ class Credentials:
     access_key_id: str | None = None
     secret_access_key: str | None = None
     session_token: str | None = None
+    s3: S3Credentials | None = None
     extra: dict[str, str] | None = None
 
 

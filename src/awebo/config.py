@@ -106,6 +106,17 @@ class RestSettings:
 
 
 @dataclass(frozen=True, slots=True)
+class LineageSettings:
+    enabled: bool = False
+    url: str | None = None
+    api_key: str | None = None
+    namespace: str = "awebo"
+    s3_bucket: str | None = None
+    s3_prefix: str = "openlineage/events"
+    s3_enabled: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class CatalogSettings:
     type: str
     name: str
@@ -120,6 +131,7 @@ class LakehouseConfig:
     s3: S3Settings | None = None
     rest: RestSettings | None = None
     streaming_threshold_mb: int = DEFAULT_STREAMING_THRESHOLD_MB
+    lineage: LineageSettings = field(default_factory=LineageSettings)
     temp_dir: str | None = None
     trace_memory: bool = False
 
@@ -192,6 +204,16 @@ def load_config() -> LakehouseConfig:
     if streaming_mb <= 0:
         raise ConfigError("AWEBO_STREAMING_THRESHOLD_MB must be positive")
 
+    lineage = LineageSettings(
+        enabled=_bool("AWEBO_LINEAGE_ENABLED"),
+        url=os.getenv("AWEBO_LINEAGE_URL"),
+        api_key=os.getenv("AWEBO_LINEAGE_API_KEY"),
+        namespace=os.getenv("AWEBO_LINEAGE_NAMESPACE", "awebo"),
+        s3_bucket=os.getenv("AWEBO_LINEAGE_S3_BUCKET"),
+        s3_prefix=os.getenv("AWEBO_LINEAGE_S3_PREFIX", "openlineage/events"),
+        s3_enabled=_bool("AWEBO_LINEAGE_S3_ENABLED"),
+    )
+
     return LakehouseConfig(
         catalog=CatalogSettings(
             type=catalog_type,
@@ -201,6 +223,7 @@ def load_config() -> LakehouseConfig:
         aws=aws,
         s3=s3,
         rest=rest,
+        lineage=lineage,
         streaming_threshold_mb=streaming_mb,
         temp_dir=os.getenv("AWEBO_TEMP_DIR"),
         trace_memory=_bool("AWEBO_TRACE_MEMORY"),
