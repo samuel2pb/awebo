@@ -44,6 +44,9 @@ dev = [
     "mypy>=1.10",
     "types-boto3>=1.34",
 ]
+lineage = [
+    "openlineage-python>=1.0.0",
+]
 
 [project.urls]
 Homepage = "https://github.com/samuel2pb/awebo"
@@ -135,6 +138,7 @@ branch = true
 
 [dependency-groups]
 dev = [
+    "openlineage-python>=1.0.0",
     "pre-commit>=4.6.0",
     "pyarrow-stubs>=20.0.0.20251215",
     "pyiceberg[sql-sqlite]>=0.11.1",

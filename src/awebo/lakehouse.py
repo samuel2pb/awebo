@@ -100,12 +100,17 @@ class Lakehouse:
         self._engine = QueryEngine(temp_dir=self._config.temp_dir)
         self._engine.attach_catalog(self._catalog, self._credentials)
 
+        from awebo.lineage.factory import create_emitter
+
+        self._emitter = create_emitter(self._config.lineage)
         self._reader = FileReader(self._engine)
         self._writer = IcebergWriter(
             engine=self._engine,
             catalog=self._catalog,
             credentials=self._credentials,
             streaming_threshold_mb=self._config.streaming_threshold_mb,
+            emitter=self._emitter,
+            lineage_namespace=self._config.lineage.namespace,
         )
 
         if self._config.trace_memory:

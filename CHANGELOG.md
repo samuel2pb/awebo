@@ -6,6 +6,30 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **OpenLineage event emission (`#18`)**: new `awebo.lineage` module with
+  pluggable `LineageEmitter` protocol, `HttpEmitter` (wraps
+  `openlineage-python` transport), and `NoopEmitter` (default when
+  disabled). `IcebergWriter` emits `START` / `COMPLETE` / `FAIL`
+  `RunEvent`s around every write operation. Emission failures log a
+  warning and never break pipelines. Config via `AWEBO_LINEAGE_ENABLED`,
+  `AWEBO_LINEAGE_URL`, `AWEBO_LINEAGE_API_KEY`, `AWEBO_LINEAGE_NAMESPACE`.
+  New `awebo[lineage]` optional extra adds `openlineage-python`.
+- **S3 lineage fallback (`#19`)**: `S3Emitter` persists OpenLineage
+  `RunEvent` JSON to S3 (`{prefix}/{namespace}/{job}/{run_id}/{type}_{ts}.json`).
+  `CompositeEmitter` fans out to multiple children with per-child failure
+  isolation. When both HTTP and S3 are enabled, `create_emitter()` auto-
+  constructs a `CompositeEmitter`. Config via `AWEBO_LINEAGE_S3_ENABLED`,
+  `AWEBO_LINEAGE_S3_BUCKET`, `AWEBO_LINEAGE_S3_PREFIX`.
+- **Data quality testing (`#20`)**: new `awebo.quality` module with
+  `QualityCheck`, `QualitySuite`, `CheckResult`, `QualityResult`
+  dataclasses and `QualityRunner` protocol. `DuckDBSQLRunner` executes
+  SQL checks against DuckDB — `query` returning 0 rows = pass, >0 = fail.
+  Warning-severity failures don't fail the suite. Each check is timed.
+  On completion, emits an OpenLineage `DataQualityAssertionsDatasetFacet`
+  via the configured `LineageEmitter`.
+
 ### Changed
 
 - **Typed S3 credentials**: `Credentials.s3: S3Credentials | None` replaces
