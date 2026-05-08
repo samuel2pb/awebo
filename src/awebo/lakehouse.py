@@ -32,6 +32,7 @@ if TYPE_CHECKING:
 
     from awebo.auth.base import AuthProvider, Credentials
     from awebo.catalog.base import CatalogBackend
+    from awebo.lineage.emitter import LineageEmitter
 
 log = logging.getLogger(__name__)
 
@@ -48,6 +49,7 @@ class LakehouseBuilder:
         self._config = config or load_config()
         self._auth: AuthProvider | None = None
         self._catalog: CatalogBackend | None = None
+        self._emitter: LineageEmitter | None = None
 
     def with_auth(self, auth: AuthProvider) -> Self:
         self._auth = auth
@@ -57,12 +59,21 @@ class LakehouseBuilder:
         self._catalog = catalog
         return self
 
+    def with_emitter(self, emitter: LineageEmitter) -> Self:
+        self._emitter = emitter
+        return self
+
     def build(self) -> Lakehouse:
         if self._auth is None:
             raise ValueError("auth provider required — call .with_auth() before .build()")
         if self._catalog is None:
             raise ValueError("catalog backend required — call .with_catalog() before .build()")
-        return Lakehouse(self._config, catalog=self._catalog, auth=self._auth)
+        return Lakehouse(
+            self._config,
+            catalog=self._catalog,
+            auth=self._auth,
+            emitter=self._emitter,
+        )
 
 
 class Lakehouse:
@@ -83,6 +94,7 @@ class Lakehouse:
         *,
         catalog: CatalogBackend | None = None,
         auth: AuthProvider | None = None,
+        emitter: LineageEmitter | None = None,
     ) -> None:
         """Wire a Lakehouse.
 
@@ -100,9 +112,12 @@ class Lakehouse:
         self._engine = QueryEngine(temp_dir=self._config.temp_dir)
         self._engine.attach_catalog(self._catalog, self._credentials)
 
-        from awebo.lineage.factory import create_emitter
+        if emitter is None:
+            from awebo.lineage.factory import create_emitter
 
-        self._emitter = create_emitter(self._config.lineage)
+            self._emitter: LineageEmitter = create_emitter(self._config.lineage)
+        else:
+            self._emitter = emitter
         self._reader = FileReader(self._engine)
         self._writer = IcebergWriter(
             engine=self._engine,
