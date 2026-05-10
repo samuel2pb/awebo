@@ -359,6 +359,8 @@ class IcebergWriter:
             if partition_spec is not None:
                 create_kwargs["partition_spec"] = partition_spec
             created: PyIcebergTable = create_table(**create_kwargs)
+            if schema_evolution:
+                self._evolve_schema(created, arrow_schema)
             return created
 
     def _evolve_schema(self, tbl: PyIcebergTable, arrow_schema: pa.Schema) -> None:
