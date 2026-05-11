@@ -85,6 +85,71 @@ def test_load_config_rest_requires_uri(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.usefixtures("clean_env")
+def test_load_config_cloudflare_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AWEBO_CATALOG_TYPE", "cloudflare")
+    monkeypatch.setenv("AWEBO_CF_ACCOUNT_ID", "abc123")
+    monkeypatch.setenv("AWEBO_CF_R2_ACCESS_KEY_ID", "r2key")
+    monkeypatch.setenv("AWEBO_CF_R2_SECRET_ACCESS_KEY", "r2secret")
+    monkeypatch.setenv("AWEBO_CF_R2_BUCKET", "my-lake")
+
+    cfg = load_config()
+
+    assert cfg.catalog.type == "cloudflare"
+    assert cfg.catalog.warehouse == "s3://my-lake/"
+    assert cfg.aws is None
+    assert cfg.cloudflare is not None
+    assert cfg.cloudflare.account_id == "abc123"
+    assert cfg.cloudflare.r2_access_key_id == "r2key"
+    assert cfg.cloudflare.r2_secret_access_key == "r2secret"
+    assert cfg.cloudflare.bucket == "my-lake"
+    assert cfg.cloudflare.jurisdiction is None
+    assert cfg.cloudflare.api_token is None
+    assert cfg.cloudflare.catalog_endpoint is None
+    assert cfg.s3 is not None
+    assert cfg.s3.endpoint == "https://abc123.r2.cloudflarestorage.com"
+    assert cfg.s3.access_key_id == "r2key"
+    assert cfg.s3.secret_access_key == "r2secret"
+    assert cfg.s3.path_style is False
+    assert cfg.rest is not None
+    assert cfg.rest.uri == "https://abc123.r2.cloudflarestorage.com"
+    assert cfg.rest.warehouse == "s3://my-lake/"
+
+
+@pytest.mark.usefixtures("clean_env")
+def test_load_config_cloudflare_with_options(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AWEBO_CATALOG_TYPE", "cloudflare")
+    monkeypatch.setenv("AWEBO_CF_ACCOUNT_ID", "abc123")
+    monkeypatch.setenv("AWEBO_CF_R2_ACCESS_KEY_ID", "r2key")
+    monkeypatch.setenv("AWEBO_CF_R2_SECRET_ACCESS_KEY", "r2secret")
+    monkeypatch.setenv("AWEBO_CF_R2_BUCKET", "my-lake")
+    monkeypatch.setenv("AWEBO_CF_API_TOKEN", "cftoken")
+    monkeypatch.setenv("AWEBO_CF_JURISDICTION", "eu")
+    monkeypatch.setenv("AWEBO_CF_CATALOG_ENDPOINT", "https://custom-catalog.example.com")
+
+    cfg = load_config()
+
+    assert cfg.cloudflare is not None
+    assert cfg.cloudflare.jurisdiction == "eu"
+    assert cfg.cloudflare.api_token == "cftoken"
+    assert cfg.cloudflare.catalog_endpoint == "https://custom-catalog.example.com"
+    assert cfg.s3 is not None
+    assert cfg.s3.endpoint == "https://abc123.eu.r2.cloudflarestorage.com"
+    assert cfg.rest is not None
+    assert cfg.rest.uri == "https://custom-catalog.example.com"
+    assert cfg.rest.token == "cftoken"
+
+
+@pytest.mark.usefixtures("clean_env")
+def test_load_config_cloudflare_requires_account_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AWEBO_CATALOG_TYPE", "cloudflare")
+    monkeypatch.setenv("AWEBO_CF_R2_ACCESS_KEY_ID", "k")
+    monkeypatch.setenv("AWEBO_CF_R2_SECRET_ACCESS_KEY", "s")
+    monkeypatch.setenv("AWEBO_CF_R2_BUCKET", "b")
+    with pytest.raises(ConfigError, match="AWEBO_CF_ACCOUNT_ID"):
+        load_config()
+
+
+@pytest.mark.usefixtures("clean_env")
 def test_load_config_rejects_negative_threshold(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("AWEBO_CATALOG_TYPE", "glue")
     monkeypatch.setenv("AWEBO_GLUE_WAREHOUSE", "s3://b/wh")

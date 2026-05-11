@@ -8,6 +8,38 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Cloudflare R2 datalake support (`#21`)**: new
+  `AWEBO_CATALOG_TYPE=cloudflare` backend. Set `AWEBO_CF_ACCOUNT_ID`,
+  `AWEBO_CF_R2_ACCESS_KEY_ID`, `AWEBO_CF_R2_SECRET_ACCESS_KEY`, and
+  `AWEBO_CF_R2_BUCKET` to auto-derive R2 S3 endpoint and REST catalog
+  URI. Optional `AWEBO_CF_JURISDICTION` (`eu`, `fedramp`) selects
+  jurisdiction-specific endpoints. Optional `AWEBO_CF_API_TOKEN` sets
+  REST catalog bearer auth. Optional `AWEBO_CF_CATALOG_ENDPOINT`
+  overrides auto-derived REST URI. Internally delegates to
+  `S3AuthProvider` + `RestCatalogBackend` — no new protocol
+  implementations needed since R2 is S3-compatible.
+
+### Changed
+
+- **Quality module internals refactored for depth and testability:**
+  - `_require_threshold()` now returns validated `CheckThreshold` instead
+    of `None`, eliminating 7 `assert` statements used for type narrowing.
+    Safe under `python -O`.
+  - `QualitySuite.checks` narrowed from `tuple | list` to `tuple` (accepts
+    any `Sequence` at construction, coerces to tuple). Frozen semantics
+    fully enforced.
+  - `DuckDBSQLRunner` compilers are now lazily instantiated per-dialect
+    instead of eagerly creating all three at init time. Module-level
+    compiler imports removed from `runner.py`.
+  - Compiler unit tests (`test_compiler.py`) replaced by behavioral
+    integration tests through `DuckDBSQLRunner.run()` in
+    `test_dialect_integration.py` — all edge cases migrated, tests now
+    survive internal refactors.
+  - Shared `quality_engine` / `quality_runner` fixtures extracted to
+    `tests/quality/conftest.py`; duplicate warning-severity test removed.
+
+### Added
+
 - **OpenLineage event emission (`#18`)**: new `awebo.lineage` module with
   pluggable `LineageEmitter` protocol, `HttpEmitter` (wraps
   `openlineage-python` transport), and `NoopEmitter` (default when
@@ -25,10 +57,23 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Data quality testing (`#20`)**: new `awebo.quality` module with
   `QualityCheck`, `QualitySuite`, `CheckResult`, `QualityResult`
   dataclasses and `QualityRunner` protocol. `DuckDBSQLRunner` executes
-  SQL checks against DuckDB — `query` returning 0 rows = pass, >0 = fail.
-  Warning-severity failures don't fail the suite. Each check is timed.
-  On completion, emits an OpenLineage `DataQualityAssertionsDatasetFacet`
-  via the configured `LineageEmitter`.
+  checks against DuckDB with three dialects selectable via
+  `QualitySuite(dialect=...)`:
+  - **`"sql"`** (default): raw SQL returning violating rows (0 = pass).
+  - **`"soda"`**: SodaCL-style expressions (`missing_count(col) = 0`,
+    `avg(col) between N and M`, `freshness(col) < 1d`, etc.) compiled to
+    DuckDB SQL. Supports `row_count`, `missing_count/percent`,
+    `duplicate_count/percent`, `min`, `max`, `avg`, `sum`, `stddev`,
+    `freshness` with time units.
+  - **`"openmetadata"`**: OpenMetadata test types (`columnValuesToBeNotNull`,
+    `columnValuesToBeUnique`, `columnValuesToBeBetween`,
+    `tableRowCountToEqual/ToBeBetween`, `columnValueLengthsToBeBetween`,
+    `columnValuesSumToBeBetween`) with `CheckThreshold` parameters.
+
+  Check results now include `metric_value` and `metric_name` for richer
+  observability. Warning-severity failures don't fail the suite. Each
+  check is timed. On completion, emits an OpenLineage
+  `DataQualityAssertionsDatasetFacet` via the configured `LineageEmitter`.
 
 ### Changed
 

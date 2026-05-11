@@ -180,13 +180,13 @@ def test_pipeline_quality_checks_pass_on_clean_data(tmp_path: Path) -> None:
                 QualityCheck(
                     name="no_negative_values",
                     description="value must be non-negative",
-                    query="SELECT * FROM {table} WHERE value < 0",
+                    expression="SELECT * FROM {table} WHERE value < 0",
                     severity="error",
                 ),
                 QualityCheck(
                     name="no_null_ids",
                     description="id must not be null",
-                    query="SELECT * FROM {table} WHERE id IS NULL",
+                    expression="SELECT * FROM {table} WHERE id IS NULL",
                     severity="error",
                 ),
             ],
@@ -226,7 +226,7 @@ def test_pipeline_quality_checks_detect_bad_data(tmp_path: Path) -> None:
                 QualityCheck(
                     name="no_negatives",
                     description="value >= 0",
-                    query="SELECT * FROM {table} WHERE value < 0",
+                    expression="SELECT * FROM {table} WHERE value < 0",
                     severity="error",
                 ),
             ],
@@ -264,7 +264,7 @@ def test_pipeline_quality_warning_does_not_fail_suite(tmp_path: Path) -> None:
                 QualityCheck(
                     name="prefer_positive",
                     description="values should be positive",
-                    query="SELECT * FROM {table} WHERE value < 0",
+                    expression="SELECT * FROM {table} WHERE value < 0",
                     severity="warning",
                 ),
             ],
@@ -302,7 +302,7 @@ def test_pipeline_quality_emits_lineage_facet(tmp_path: Path) -> None:
                 QualityCheck(
                     name="all_positive",
                     description="all values positive",
-                    query="SELECT * FROM {table} WHERE value <= 0",
+                    expression="SELECT * FROM {table} WHERE value <= 0",
                     severity="error",
                 ),
             ],
@@ -354,13 +354,13 @@ def test_pipeline_full_flow_write_quality_lineage(
                 QualityCheck(
                     name="positive_amounts",
                     description="amount > 0",
-                    query="SELECT * FROM {table} WHERE amount <= 0",
+                    expression="SELECT * FROM {table} WHERE amount <= 0",
                     severity="error",
                 ),
                 QualityCheck(
                     name="known_categories",
                     description="category in (a, b, c)",
-                    query="SELECT * FROM {table} WHERE category NOT IN ('a','b','c')",
+                    expression="SELECT * FROM {table} WHERE category NOT IN ('a','b','c')",
                     severity="warning",
                 ),
             ],

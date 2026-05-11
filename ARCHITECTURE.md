@@ -30,11 +30,14 @@ src/awebo/
 │
 ├── auth/                # FEATURE: cloud credential resolution
 │   ├── base.py          #   AuthProvider ABC + Credentials struct
-│   └── aws.py           #   AwsAuthProvider (boto3 chain + optional STS assume-role)
+│   ├── aws.py           #   AwsAuthProvider (boto3 chain + optional STS assume-role)
+│   └── s3.py            #   S3AuthProvider (static S3-compat creds for MinIO, R2, Ceph)
 │
 ├── catalog/             # FEATURE: Iceberg catalog backends
 │   ├── base.py          #   CatalogBackend ABC: pyiceberg(), duckdb_attach_sql(), ensure_namespace()
-│   └── glue.py          #   GlueCatalogBackend (AWS Glue + S3)
+│   ├── glue.py          #   GlueCatalogBackend (AWS Glue + S3)
+│   ├── rest.py          #   RestCatalogBackend (Iceberg REST — Lakekeeper, Nessie, Polaris)
+│   └── cloudflare.py    #   CloudflareCatalogBackend (R2 — delegates to REST)
 │
 ├── query/               # FEATURE: read path
 │   ├── engine.py        #   QueryEngine — single DuckDB connection per Lakehouse
@@ -55,7 +58,8 @@ src/awebo/
 │   └── composite.py     #   CompositeEmitter — fans out to multiple children
 │
 └── quality/             # FEATURE: pluggable data quality testing
-    ├── types.py         #   QualityCheck, QualitySuite, CheckResult, QualityResult
+    ├── types.py         #   QualityCheck, QualitySuite, CheckResult, QualityResult, CheckThreshold
+    ├── compiler.py      #   CheckCompiler protocol + SQL/Soda/OpenMetadata compilers
     └── runner.py        #   QualityRunner protocol + DuckDBSQLRunner
 ```
 
@@ -74,6 +78,8 @@ tests under the same package name.
 | Change how DuckDB is configured | `src/awebo/query/engine.py` |
 | Add a lineage emitter backend | `src/awebo/lineage/<name>.py` + register in `factory.create_emitter` |
 | Add quality check capabilities | `src/awebo/quality/runner.py` |
+| Add a quality check dialect | `src/awebo/quality/compiler.py` + register in `runner._default_compiler` |
+| Configure Cloudflare R2 | Set `AWEBO_CATALOG_TYPE=cloudflare` + `AWEBO_CF_*` env vars |
 
 ## Key invariants
 

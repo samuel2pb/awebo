@@ -280,4 +280,9 @@ class Lakehouse:
         if config.catalog.type == "rest":
             assert config.rest is not None  # guaranteed by load_config()
             return RestCatalogBackend(config.catalog, config.rest)
+        if config.catalog.type == "cloudflare":
+            assert config.cloudflare is not None  # guaranteed by load_config()
+            from awebo.catalog.cloudflare import CloudflareCatalogBackend
+
+            return CloudflareCatalogBackend(config.catalog, config.cloudflare)
         raise ConfigError(f"unsupported catalog type: {config.catalog.type!r}")

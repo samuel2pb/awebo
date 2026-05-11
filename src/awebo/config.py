@@ -11,7 +11,7 @@ Environment contract
 Required
 ~~~~~~~~
 ``AWEBO_CATALOG_TYPE``
-    Catalog backend identifier. Supported: ``glue``, ``rest``.
+    Catalog backend identifier. Supported: ``glue``, ``rest``, ``cloudflare``.
 
 ``AWEBO_CATALOG_NAME``
     DuckDB ATTACH alias. Becomes the ``catalog`` token in
@@ -117,6 +117,19 @@ class LineageSettings:
 
 
 @dataclass(frozen=True, slots=True)
+class CloudflareSettings:
+    """Cloudflare R2 datalake connection details."""
+
+    account_id: str
+    r2_access_key_id: str
+    r2_secret_access_key: str
+    bucket: str
+    api_token: str | None = None
+    jurisdiction: str | None = None
+    catalog_endpoint: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class CatalogSettings:
     type: str
     name: str
@@ -130,6 +143,7 @@ class LakehouseConfig:
     aws: AwsSettings | None = None
     s3: S3Settings | None = None
     rest: RestSettings | None = None
+    cloudflare: CloudflareSettings | None = None
     streaming_threshold_mb: int = DEFAULT_STREAMING_THRESHOLD_MB
     lineage: LineageSettings = field(default_factory=LineageSettings)
     temp_dir: str | None = None
@@ -162,6 +176,7 @@ def load_config() -> LakehouseConfig:
     aws: AwsSettings | None = None
     s3: S3Settings | None = None
     rest: RestSettings | None = None
+    cloudflare: CloudflareSettings | None = None
     catalog_warehouse: str | None = None
 
     if catalog_type == "glue":
@@ -194,9 +209,38 @@ def load_config() -> LakehouseConfig:
             secret_access_key=os.getenv("AWEBO_S3_SECRET_ACCESS_KEY"),
             region=os.getenv("AWEBO_S3_REGION"),
         )
+    elif catalog_type == "cloudflare":
+        cf = CloudflareSettings(
+            account_id=_require("AWEBO_CF_ACCOUNT_ID"),
+            r2_access_key_id=_require("AWEBO_CF_R2_ACCESS_KEY_ID"),
+            r2_secret_access_key=_require("AWEBO_CF_R2_SECRET_ACCESS_KEY"),
+            bucket=_require("AWEBO_CF_R2_BUCKET"),
+            api_token=os.getenv("AWEBO_CF_API_TOKEN"),
+            jurisdiction=os.getenv("AWEBO_CF_JURISDICTION"),
+            catalog_endpoint=os.getenv("AWEBO_CF_CATALOG_ENDPOINT"),
+        )
+        cloudflare = cf
+
+        jur = f".{cf.jurisdiction}" if cf.jurisdiction else ""
+        r2_host = f"https://{cf.account_id}{jur}.r2.cloudflarestorage.com"
+
+        s3 = S3Settings(
+            endpoint=r2_host,
+            path_style=False,
+            access_key_id=cf.r2_access_key_id,
+            secret_access_key=cf.r2_secret_access_key,
+            region=os.getenv("AWEBO_S3_REGION", "auto"),
+        )
+        rest = RestSettings(
+            uri=cf.catalog_endpoint or r2_host,
+            warehouse=f"s3://{cf.bucket}/",
+            token=cf.api_token,
+        )
+        catalog_warehouse = f"s3://{cf.bucket}/"
     else:
         raise ConfigError(
-            f"unsupported AWEBO_CATALOG_TYPE={catalog_type!r}; supported: 'glue', 'rest'"
+            f"unsupported AWEBO_CATALOG_TYPE={catalog_type!r};"
+            " supported: 'glue', 'rest', 'cloudflare'"
         )
 
     streaming_mb_raw = os.getenv("AWEBO_STREAMING_THRESHOLD_MB")
@@ -223,6 +267,7 @@ def load_config() -> LakehouseConfig:
         aws=aws,
         s3=s3,
         rest=rest,
+        cloudflare=cloudflare,
         lineage=lineage,
         streaming_threshold_mb=streaming_mb,
         temp_dir=os.getenv("AWEBO_TEMP_DIR"),
