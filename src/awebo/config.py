@@ -223,6 +223,7 @@ def load_config() -> LakehouseConfig:
 
         jur = f".{cf.jurisdiction}" if cf.jurisdiction else ""
         r2_host = f"https://{cf.account_id}{jur}.r2.cloudflarestorage.com"
+        catalog_default = f"https://catalog.cloudflarestorage.com/{cf.account_id}/{cf.bucket}"
 
         s3 = S3Settings(
             endpoint=r2_host,
@@ -231,12 +232,13 @@ def load_config() -> LakehouseConfig:
             secret_access_key=cf.r2_secret_access_key,
             region=os.getenv("AWEBO_S3_REGION", "auto"),
         )
+        wh = f"{cf.account_id}_{cf.bucket}"
         rest = RestSettings(
-            uri=cf.catalog_endpoint or r2_host,
-            warehouse=f"s3://{cf.bucket}/",
+            uri=cf.catalog_endpoint or catalog_default,
+            warehouse=wh,
             token=cf.api_token,
         )
-        catalog_warehouse = f"s3://{cf.bucket}/"
+        catalog_warehouse = wh
     else:
         raise ConfigError(
             f"unsupported AWEBO_CATALOG_TYPE={catalog_type!r};"
