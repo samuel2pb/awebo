@@ -74,7 +74,7 @@ def test_catalog_endpoint_override() -> None:
 
 def test_catalog_endpoint_defaults_to_r2() -> None:
     backend = _cf_backend()
-    assert backend._rest_uri == "https://abc123.r2.cloudflarestorage.com"
+    assert backend._rest_uri == "https://catalog.cloudflarestorage.com/abc123/my-lake"
 
 
 def test_type_is_cloudflare() -> None:

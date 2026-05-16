@@ -40,13 +40,15 @@ class CloudflareCatalogBackend(CatalogBackend):
     ) -> None:
         self.name = catalog_settings.name
         self._r2_endpoint = _build_r2_endpoint(cf.account_id, cf.jurisdiction)
-        self._rest_uri = cf.catalog_endpoint or self._r2_endpoint
+        catalog_default = f"https://catalog.cloudflarestorage.com/{cf.account_id}/{cf.bucket}"
+        self._rest_uri = cf.catalog_endpoint or catalog_default
 
         from awebo.config import RestSettings
 
+        wh = f"{cf.account_id}_{cf.bucket}"
         rest: RestSettings = RestSettings(
             uri=self._rest_uri,
-            warehouse=f"s3://{cf.bucket}/",
+            warehouse=wh,
             token=cf.api_token,
         )
         self._inner = RestCatalogBackend(catalog_settings, rest)

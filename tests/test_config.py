@@ -95,7 +95,7 @@ def test_load_config_cloudflare_happy_path(monkeypatch: pytest.MonkeyPatch) -> N
     cfg = load_config()
 
     assert cfg.catalog.type == "cloudflare"
-    assert cfg.catalog.warehouse == "s3://my-lake/"
+    assert cfg.catalog.warehouse == "abc123_my-lake"
     assert cfg.aws is None
     assert cfg.cloudflare is not None
     assert cfg.cloudflare.account_id == "abc123"
@@ -111,8 +111,8 @@ def test_load_config_cloudflare_happy_path(monkeypatch: pytest.MonkeyPatch) -> N
     assert cfg.s3.secret_access_key == "r2secret"
     assert cfg.s3.path_style is False
     assert cfg.rest is not None
-    assert cfg.rest.uri == "https://abc123.r2.cloudflarestorage.com"
-    assert cfg.rest.warehouse == "s3://my-lake/"
+    assert cfg.rest.uri == "https://catalog.cloudflarestorage.com/abc123/my-lake"
+    assert cfg.rest.warehouse == "abc123_my-lake"
 
 
 @pytest.mark.usefixtures("clean_env")
