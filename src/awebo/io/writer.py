@@ -344,15 +344,22 @@ class IcebergWriter:
     ) -> PyIcebergTable:
         load_table = py_catalog.load_table  # type: ignore[attr-defined]
         create_table = py_catalog.create_table  # type: ignore[attr-defined]
+        loaded = False
         try:
             tbl: PyIcebergTable = load_table(identifier)
+            loaded = True
             log.debug("loaded existing table %s", identifier)
             if schema_evolution:
                 self._evolve_schema(tbl, arrow_schema)
             if partition_spec is not None:
-                self._evolve_partition_spec(tbl, partition_spec)
+                self._evolve_partition_spec(tbl, partition_spec, desired_schema=schema)
             return tbl
         except Exception:
+            if loaded:
+                # Schema/partition evolution failed on an existing table —
+                # propagate; do NOT fall through to create_table which would
+                # error with TableAlreadyExists.
+                raise
             log.debug("creating table %s", identifier)
             create_kwargs: dict[str, object] = {"identifier": identifier}
             create_kwargs["schema"] = schema if schema is not None else arrow_schema
@@ -375,8 +382,16 @@ class IcebergWriter:
         self,
         tbl: PyIcebergTable,
         desired_spec: PyIcebergPartitionSpec,
+        desired_schema: PyIcebergSchema | None = None,
     ) -> None:
-        """Evolve partition spec if it differs from the current one."""
+        """Evolve partition spec if it differs from the current one.
+
+        ``desired_spec.fields[i].source_id`` is the field id in ``desired_schema``
+        (the contract-derived schema), not necessarily in the live table — when a
+        partition column has just been added via schema evolution, Iceberg
+        auto-assigns its id and the contract's value is stale. We resolve the
+        source column by NAME against the live table schema.
+        """
         current_spec = tbl.spec()
         current_fields = {f.name for f in current_spec.fields}
         desired_fields = {f.name for f in desired_spec.fields}
@@ -390,9 +405,22 @@ class IcebergWriter:
                     if field.name not in desired_fields:
                         update.remove_field(field.name)
                 for field in desired_spec.fields:
-                    if field.name not in current_fields:
-                        source = tbl.schema().find_field(field.source_id)
-                        update.add_field(source.name, field.transform, field.name)
+                    if field.name in current_fields:
+                        continue
+                    source_name: str | None = None
+                    if desired_schema is not None:
+                        try:
+                            source_name = desired_schema.find_field(field.source_id).name
+                        except Exception:
+                            source_name = None
+                    if source_name is None:
+                        # Fall back to id-based lookup against the live schema.
+                        source_name = tbl.schema().find_field(field.source_id).name
+                    # Confirm the source column exists in the live (post-evolve)
+                    # schema by NAME; this is the one that holds the auto-
+                    # assigned id we actually need.
+                    tbl.schema().find_field(source_name)
+                    update.add_field(source_name, field.transform, field.name)
         except Exception as exc:
             raise WriteError(f"partition evolution failed: {exc}") from exc
 
