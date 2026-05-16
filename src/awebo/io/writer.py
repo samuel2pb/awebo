@@ -19,11 +19,14 @@ Write modes
 ``mode="append"`` (default) is the streaming-friendly path.
 
 ``mode="overwrite"`` replaces table contents. When the target table is
-partitioned (identity transforms), only the partitions present in the
-incoming data are replaced (*dynamic partition overwrite*). Unpartitioned
-tables get a full replacement. In-memory sources (``pa.Table``,
-``pl.DataFrame``) use PyIceberg's ``dynamic_partition_overwrite``
-directly. SQL strings use a transactional path: a cheap
+partitioned by identity-only transforms, only the partitions present in
+the incoming data are replaced (*dynamic partition overwrite*).
+Unpartitioned tables get a full replacement. Mixed or non-identity
+partition specs (e.g. ``year(ts)``) — which PyIceberg's
+``dynamic_partition_overwrite`` rejects — fall back to
+``overwrite(df, overwrite_filter=expr)``; the filter is derived from
+identity columns present in the data so transform-only partitions are
+not deleted wholesale. SQL strings use a transactional path: a cheap
 ``SELECT DISTINCT`` pre-query extracts partition values, then ``delete``
 + chunked ``append`` inside a single PyIceberg ``Transaction`` — DuckDB
 handles disk spill so the full dataset is never materialised.
@@ -186,10 +189,18 @@ class IcebergWriter:
                     partition_spec=partition_spec,
                     schema_evolution=schema_evolution,
                 )
-                if self._identity_partition_columns(tbl):
+                spec_fields = tbl.spec().fields
+                if not spec_fields:
+                    tbl.overwrite(arrow_table)
+                elif self._all_identity_partitions(tbl):
                     tbl.dynamic_partition_overwrite(arrow_table)
                 else:
-                    tbl.overwrite(arrow_table)
+                    # Mixed/non-identity spec: pyiceberg's
+                    # dynamic_partition_overwrite rejects non-identity
+                    # transforms. Scope the delete to identity columns
+                    # present in the data and overwrite within that filter.
+                    expr = self._partition_filter_from_arrow(arrow_table, tbl)
+                    tbl.overwrite(arrow_table, overwrite_filter=expr)
             except WriteError:
                 raise
             except Exception as exc:
@@ -271,6 +282,71 @@ class IcebergWriter:
                 source = tbl.schema().find_field(field.source_id)
                 cols.append(source.name)
         return cols
+
+    def _all_identity_partitions(self, tbl: PyIcebergTable) -> bool:
+        """True iff the partition spec is non-empty and entirely identity."""
+        from pyiceberg.transforms import IdentityTransform
+
+        fields = tbl.spec().fields
+        return bool(fields) and all(isinstance(f.transform, IdentityTransform) for f in fields)
+
+    def _partition_filter_from_arrow(
+        self,
+        arrow_table: pa.Table,
+        tbl: PyIcebergTable,
+    ) -> BooleanExpression:
+        """Build an overwrite filter from identity-partition values in arrow.
+
+        When the partition spec mixes identity and transform fields, pyiceberg
+        cannot dynamic-overwrite. We narrow the delete to the identity slice
+        present in the incoming data; transform-only fields stay implicit
+        (their values follow from the data being written).
+        """
+        from pyiceberg.expressions import AlwaysTrue
+
+        identity_cols = self._identity_partition_columns(tbl)
+        if not identity_cols:
+            return AlwaysTrue()
+
+        present = [c for c in identity_cols if c in arrow_table.schema.names]
+        if not present:
+            return AlwaysTrue()
+
+        distinct_tbl = arrow_table.select(present).group_by(present).aggregate([])
+        return self._expression_from_distinct(distinct_tbl, present)
+
+    def _expression_from_distinct(
+        self,
+        distinct_tbl: pa.Table,
+        partition_cols: list[str],
+    ) -> BooleanExpression:
+        from pyiceberg.expressions import AlwaysTrue, And, EqualTo, In, Or
+
+        if distinct_tbl.num_rows == 0:
+            return AlwaysTrue()
+
+        if len(partition_cols) == 1:
+            col = partition_cols[0]
+            values = tuple(distinct_tbl.column(col).to_pylist())
+            if len(values) == 1:
+                return EqualTo(term=col, literal=values[0])  # type: ignore[arg-type,call-arg]
+            return In(term=col, literals=values)  # type: ignore[arg-type,call-arg]
+
+        row_filters: list[BooleanExpression] = []
+        for row in distinct_tbl.to_pylist():
+            col_eqs: list[BooleanExpression] = [
+                EqualTo(term=col, literal=row[col])  # type: ignore[arg-type,call-arg]
+                for col in partition_cols
+            ]
+            combined: BooleanExpression = col_eqs[0]
+            for eq in col_eqs[1:]:
+                combined = And(left=combined, right=eq)
+            row_filters.append(combined)
+
+        result: BooleanExpression = row_filters[0]
+        for rf in row_filters[1:]:
+            result = Or(left=result, right=rf)
+        return result
 
     def _partition_filter_from_sql(
         self,

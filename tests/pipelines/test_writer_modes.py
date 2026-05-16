@@ -16,8 +16,8 @@ import pyarrow as pa
 import pytest
 from pyiceberg.partitioning import PartitionField, PartitionSpec
 from pyiceberg.schema import Schema
-from pyiceberg.transforms import DayTransform, IdentityTransform
-from pyiceberg.types import LongType, NestedField, StringType, TimestamptzType
+from pyiceberg.transforms import DayTransform, IdentityTransform, YearTransform
+from pyiceberg.types import DateType, LongType, NestedField, StringType, TimestamptzType
 
 from awebo.exceptions import WriteError
 
@@ -298,6 +298,86 @@ def test_sql_overwrite_multi_column_partition(lake: Lakehouse) -> None:
     assert rows_by_key[(2023, "US")] == 1, "2023/US untouched"
     assert rows_by_key[(2023, "EU")] == 2, "2023/EU untouched"
     assert rows_by_key[(2024, "US")] == 99, "2024/US replaced"
+
+
+# ------------------------------------ non-identity / mixed partition overwrite
+
+
+def test_overwrite_year_transform_only_partition(lake: Lakehouse) -> None:
+    """Overwrite on a year()-only partitioned table replaces the full table.
+
+    No identity partition column exists, so the filter falls back to
+    ``AlwaysTrue`` — full replacement. Validates the path doesn't crash on
+    pyiceberg's dynamic-overwrite restriction.
+    """
+    from datetime import date
+
+    iceberg_schema = Schema(
+        NestedField(field_id=1, name="trade_date", field_type=DateType(), required=False),
+        NestedField(field_id=2, name="value", field_type=LongType(), required=False),
+    )
+    spec = PartitionSpec(
+        PartitionField(source_id=1, field_id=1000, transform=YearTransform(), name="trade_year"),
+    )
+
+    initial = pl.DataFrame(
+        {
+            "trade_date": [date(2023, 6, 1), date(2024, 6, 1)],
+            "value": [1, 2],
+        }
+    )
+    lake.to_lake(
+        initial, database="db", table="yearonly", schema=iceberg_schema, partition_spec=spec
+    )
+
+    update = pl.DataFrame({"trade_date": [date(2024, 6, 1)], "value": [99]})
+    lake.to_lake(update, database="db", table="yearonly", mode="overwrite")
+
+    out = _read_back(lake, "db", "yearonly")
+    rows = out.to_pylist()
+    assert len(rows) == 1
+    assert rows[0]["value"] == 99
+
+
+def test_overwrite_mixed_identity_and_year_partition(lake: Lakehouse) -> None:
+    """Mixed spec: identity logical_year + year(trade_date) — overwrite by
+    identity slice (year-by-year backfill pattern used by hyoko b3_cotahist)."""
+    from datetime import date
+
+    iceberg_schema = Schema(
+        NestedField(field_id=1, name="trade_date", field_type=DateType(), required=False),
+        NestedField(field_id=2, name="logical_year", field_type=LongType(), required=False),
+        NestedField(field_id=3, name="value", field_type=LongType(), required=False),
+    )
+    spec = PartitionSpec(
+        PartitionField(source_id=1, field_id=1000, transform=YearTransform(), name="trade_year"),
+        PartitionField(
+            source_id=2, field_id=1001, transform=IdentityTransform(), name="logical_year"
+        ),
+    )
+
+    initial = pl.DataFrame(
+        {
+            "trade_date": [date(2023, 6, 1), date(2024, 6, 1)],
+            "logical_year": [2023, 2024],
+            "value": [1, 2],
+        }
+    )
+    lake.to_lake(initial, database="db", table="mixed", schema=iceberg_schema, partition_spec=spec)
+
+    update = pl.DataFrame(
+        {
+            "trade_date": [date(2024, 6, 1)],
+            "logical_year": [2024],
+            "value": [99],
+        }
+    )
+    lake.to_lake(update, database="db", table="mixed", mode="overwrite")
+
+    out = _read_back(lake, "db", "mixed")
+    rows_by_year = {r["logical_year"]: r["value"] for r in out.to_pylist()}
+    assert rows_by_year[2023] == 1, "2023 partition untouched"
+    assert rows_by_year[2024] == 99, "2024 partition replaced"
 
 
 # ----------------------------------------------------- explicit schema/partition
