@@ -380,6 +380,114 @@ def test_overwrite_mixed_identity_and_year_partition(lake: Lakehouse) -> None:
     assert rows_by_year[2024] == 99, "2024 partition replaced"
 
 
+# ---------------------------------------- empty arrow overwrite safety (#25)
+
+
+def test_empty_arrow_overwrite_preserves_mixed_partitioned_table(lake: Lakehouse) -> None:
+    """Empty arrow on overwrite must not wipe existing partitions (mixed spec)."""
+    from datetime import date
+
+    iceberg_schema = Schema(
+        NestedField(field_id=1, name="trade_date", field_type=DateType(), required=False),
+        NestedField(field_id=2, name="fiscal_year", field_type=LongType(), required=False),
+        NestedField(field_id=3, name="value", field_type=LongType(), required=False),
+    )
+    spec = PartitionSpec(
+        PartitionField(source_id=1, field_id=1000, transform=YearTransform(), name="trade_year"),
+        PartitionField(
+            source_id=2, field_id=1001, transform=IdentityTransform(), name="fiscal_year"
+        ),
+    )
+
+    initial = pl.DataFrame(
+        {
+            "trade_date": [date(2023, 6, 1), date(2024, 6, 1)],
+            "fiscal_year": [2023, 2024],
+            "value": [1, 2],
+        }
+    )
+    lake.to_lake(
+        initial, database="db", table="empty_mixed", schema=iceberg_schema, partition_spec=spec
+    )
+
+    empty = pa.table(
+        {
+            "trade_date": pa.array([], type=pa.date32()),
+            "fiscal_year": pa.array([], type=pa.int64()),
+            "value": pa.array([], type=pa.int64()),
+        }
+    )
+    lake.to_lake(empty, database="db", table="empty_mixed", mode="overwrite")
+
+    out = _read_back(lake, "db", "empty_mixed")
+    assert out.num_rows == 2, "empty overwrite must not delete existing rows"
+
+
+def test_empty_arrow_overwrite_preserves_unpartitioned_table(lake: Lakehouse) -> None:
+    """Empty arrow on overwrite must not wipe an unpartitioned table."""
+    initial = pl.DataFrame({"id": [1, 2, 3], "name": ["a", "b", "c"]})
+    lake.to_lake(initial, database="db", table="empty_unpart")
+
+    empty = pa.table(
+        {"id": pa.array([], type=pa.int64()), "name": pa.array([], type=pa.large_string())}
+    )
+    lake.to_lake(empty, database="db", table="empty_unpart", mode="overwrite")
+
+    out = _read_back(lake, "db", "empty_unpart")
+    assert out.num_rows == 3, "empty overwrite must not delete existing rows"
+
+
+def test_empty_polars_overwrite_preserves_data(lake: Lakehouse) -> None:
+    """Empty Polars DataFrame on overwrite must not wipe existing data."""
+    initial = pl.DataFrame({"id": [1, 2, 3]})
+    lake.to_lake(initial, database="db", table="empty_pl")
+
+    empty = pl.DataFrame({"id": pl.Series([], dtype=pl.Int64)})
+    lake.to_lake(empty, database="db", table="empty_pl", mode="overwrite")
+
+    out = _read_back(lake, "db", "empty_pl")
+    assert out.num_rows == 3, "empty overwrite must not delete existing rows"
+
+
+def test_empty_sql_streaming_overwrite_preserves_data(lake: Lakehouse) -> None:
+    """Empty SQL result on streaming overwrite must not wipe existing data."""
+    iceberg_schema = Schema(
+        NestedField(field_id=1, name="year", field_type=LongType(), required=False),
+        NestedField(field_id=2, name="value", field_type=LongType(), required=False),
+    )
+    spec = PartitionSpec(
+        PartitionField(source_id=1, field_id=1000, transform=IdentityTransform(), name="year")
+    )
+
+    initial = pl.DataFrame({"year": [2023, 2024], "value": [1, 2]})
+    lake.to_lake(
+        initial, database="db", table="empty_sql", schema=iceberg_schema, partition_spec=spec
+    )
+
+    lake.to_lake(
+        "SELECT 2024 AS year, 99 AS value WHERE false",
+        database="db",
+        table="empty_sql",
+        mode="overwrite",
+    )
+
+    out = _read_back(lake, "db", "empty_sql")
+    assert out.num_rows == 2, "empty SQL overwrite must not delete existing rows"
+
+
+def test_empty_record_batch_reader_overwrite_preserves_data(lake: Lakehouse) -> None:
+    """Empty RecordBatchReader on overwrite must not wipe existing data."""
+    initial = pl.DataFrame({"id": [1, 2, 3]})
+    lake.to_lake(initial, database="db", table="empty_rbr")
+
+    schema = pa.schema([pa.field("id", pa.int64())])
+    empty_reader = pa.RecordBatchReader.from_batches(schema, iter([]))
+    lake.to_lake(empty_reader, database="db", table="empty_rbr", mode="overwrite")
+
+    out = _read_back(lake, "db", "empty_rbr")
+    assert out.num_rows == 3, "empty overwrite must not delete existing rows"
+
+
 # ----------------------------------------------------- explicit schema/partition
 
 

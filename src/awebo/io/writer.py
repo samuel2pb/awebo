@@ -180,6 +180,9 @@ class IcebergWriter:
             )
         else:
             arrow_table = self._materialise(data)
+            if arrow_table.num_rows == 0:
+                log.warning("empty arrow table — skipping overwrite of %s", identifier)
+                return
             try:
                 tbl = self._load_or_create(
                     py_catalog,
@@ -195,10 +198,6 @@ class IcebergWriter:
                 elif self._all_identity_partitions(tbl):
                     tbl.dynamic_partition_overwrite(arrow_table)
                 else:
-                    # Mixed/non-identity spec: pyiceberg's
-                    # dynamic_partition_overwrite rejects non-identity
-                    # transforms. Scope the delete to identity columns
-                    # present in the data and overwrite within that filter.
                     expr = self._partition_filter_from_arrow(arrow_table, tbl)
                     tbl.overwrite(arrow_table, overwrite_filter=expr)
             except WriteError:
@@ -241,7 +240,10 @@ class IcebergWriter:
             reader, _ = self._coerce_to_reader(data)
             txn = tbl.transaction()
             txn.delete(delete_filter=delete_filter)
-            self._txn_stream_append(txn, reader, arrow_schema)
+            rows_written = self._txn_stream_append(txn, reader, arrow_schema)
+            if rows_written == 0:
+                log.warning("empty source — skipping streaming overwrite of %s", identifier)
+                return
             txn.commit_transaction()
 
         except WriteError:
@@ -392,19 +394,23 @@ class IcebergWriter:
         txn: object,
         reader: pa.RecordBatchReader,
         arrow_schema: pa.Schema,
-    ) -> None:
-        """Stream batches into a transaction. Memory stays bounded."""
+    ) -> int:
+        """Stream batches into a transaction. Returns total rows written."""
         buffer: list[pa.RecordBatch] = []
         rows = 0
+        total_rows = 0
         for batch in reader:
             buffer.append(batch)
             rows += batch.num_rows
             if rows >= self._append_chunk_rows:
                 txn.append(pa.Table.from_batches(buffer, schema=arrow_schema))  # type: ignore[attr-defined]
+                total_rows += rows
                 buffer = []
                 rows = 0
         if buffer:
             txn.append(pa.Table.from_batches(buffer, schema=arrow_schema))  # type: ignore[attr-defined]
+            total_rows += rows
+        return total_rows
 
     # ------------------------------------------------------------ load / create
 

@@ -6,6 +6,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Empty arrow overwrite no longer wipes table (`#25`)**: `_overwrite`
+  now short-circuits when the materialised arrow table has zero rows
+  (logs warning, returns). `_streaming_overwrite` abandons the
+  transaction when the source yields zero rows, so the delete never
+  commits. Prevents silent data loss when a pipeline iteration produces
+  an empty result (e.g. header-only CSV).
+
 ### Added
 
 - **Cloudflare R2 datalake support (`#21`)**: new
