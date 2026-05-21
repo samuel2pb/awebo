@@ -8,6 +8,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Transform-only partition overwrite now scoped (`#27`)**: `days()`,
+  `months()`, `years()`, and `hours()` partition specs no longer return
+  `AlwaysTrue()` on overwrite. Both materialised and streaming paths
+  now build a `[min, max)` range filter from the data, replacing only
+  the touched temporal partitions instead of wiping the entire table.
+
 - **Empty arrow overwrite no longer wipes table (`#25`)**: `_overwrite`
   now short-circuits when the materialised arrow table has zero rows
   (logs warning, returns). `_streaming_overwrite` abandons the

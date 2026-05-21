@@ -21,16 +21,16 @@ Write modes
 ``mode="overwrite"`` replaces table contents. When the target table is
 partitioned by identity-only transforms, only the partitions present in
 the incoming data are replaced (*dynamic partition overwrite*).
-Unpartitioned tables get a full replacement. Mixed or non-identity
-partition specs (e.g. ``year(ts)``) — which PyIceberg's
-``dynamic_partition_overwrite`` rejects — fall back to
-``overwrite(df, overwrite_filter=expr)``; the filter is derived from
-identity columns present in the data so transform-only partitions are
-not deleted wholesale. SQL strings use a transactional path: a cheap
-``SELECT DISTINCT`` pre-query extracts partition values, then ``delete``
-+ chunked ``append`` inside a single PyIceberg ``Transaction`` — DuckDB
-handles disk spill so the full dataset is never materialised.
-``RecordBatchReader`` (one-shot) falls back to full replacement.
+Unpartitioned tables get a full replacement. Mixed partition specs fall
+back to ``overwrite(df, overwrite_filter=expr)`` using identity columns.
+Transform-only specs (e.g. ``days(ts)``, ``years(trade_date)``) build a
+range filter from the data's min/max values so only touched temporal
+partitions are replaced. SQL strings use a transactional path: a cheap
+``SELECT MIN/MAX`` (or ``SELECT DISTINCT`` for identity) pre-query
+extracts partition boundaries, then ``delete`` + chunked ``append``
+inside a single PyIceberg ``Transaction`` — DuckDB handles disk spill
+so the full dataset is never materialised. ``RecordBatchReader``
+(one-shot) falls back to full replacement.
 """
 
 from __future__ import annotations
@@ -68,6 +68,10 @@ DEFAULT_APPEND_CHUNK_ROWS = 200_000
 _VALID_MODES: frozenset[str] = frozenset({"append", "overwrite"})
 
 log = logging.getLogger(__name__)
+
+
+def _next_month(year: int, month: int) -> tuple[int, int]:
+    return (year + 1, 1) if month == 12 else (year, month + 1)
 
 
 class IcebergWriter:
@@ -261,6 +265,7 @@ class IcebergWriter:
         """Build delete filter for streaming overwrite.
 
         SQL + partitioned (identity) → scoped filter from ``SELECT DISTINCT``.
+        SQL + partitioned (transform-only) → range filter from ``MIN``/``MAX``.
         Everything else → ``AlwaysTrue()`` (full replacement).
         """
         from pyiceberg.expressions import AlwaysTrue
@@ -269,10 +274,16 @@ class IcebergWriter:
             return AlwaysTrue()
 
         identity_cols = self._identity_partition_columns(tbl)
-        if not identity_cols:
-            return AlwaysTrue()
+        if identity_cols:
+            return self._partition_filter_from_sql(data, identity_cols)
 
-        return self._partition_filter_from_sql(data, identity_cols)
+        transform_fields = self._transform_partition_fields(tbl)
+        if transform_fields:
+            expr = self._range_filter_from_sql(data, transform_fields)
+            if expr is not None:
+                return expr
+
+        return AlwaysTrue()
 
     def _identity_partition_columns(self, tbl: PyIcebergTable) -> list[str]:
         """Return source column names for identity-transform partition fields."""
@@ -292,30 +303,168 @@ class IcebergWriter:
         fields = tbl.spec().fields
         return bool(fields) and all(isinstance(f.transform, IdentityTransform) for f in fields)
 
+    def _transform_partition_fields(self, tbl: PyIcebergTable) -> list[tuple[str, object]]:
+        """Return (source_column_name, transform) for temporal transform fields."""
+        from pyiceberg.transforms import (
+            DayTransform,
+            HourTransform,
+            IdentityTransform,
+            MonthTransform,
+            YearTransform,
+        )
+
+        temporal = (DayTransform, MonthTransform, YearTransform, HourTransform)
+        result: list[tuple[str, object]] = []
+        for field in tbl.spec().fields:
+            if isinstance(field.transform, IdentityTransform):
+                continue
+            if isinstance(field.transform, temporal):
+                source = tbl.schema().find_field(field.source_id)
+                result.append((source.name, field.transform))
+        return result
+
+    def _range_filter_from_arrow(
+        self,
+        arrow_table: pa.Table,
+        transform_fields: list[tuple[str, object]],
+    ) -> BooleanExpression | None:
+        """Build a range filter from min/max values for each transform field."""
+        import pyarrow.compute as pc
+        from pyiceberg.expressions import And, GreaterThanOrEqual, LessThan
+
+        parts: list[BooleanExpression] = []
+        for col_name, transform in transform_fields:
+            if col_name not in arrow_table.schema.names:
+                return None
+            column = arrow_table.column(col_name)
+            min_val = pc.min(column).as_py()
+            max_val = pc.max(column).as_py()
+            if min_val is None or max_val is None:
+                return None
+            lower, upper = self._temporal_boundaries(transform, min_val, max_val)
+            if lower is None or upper is None:
+                return None
+            parts.append(
+                And(
+                    left=GreaterThanOrEqual(term=col_name, literal=lower),  # type: ignore[arg-type,call-arg]
+                    right=LessThan(term=col_name, literal=upper),  # type: ignore[arg-type,call-arg]
+                )
+            )
+
+        if not parts:
+            return None
+        expr: BooleanExpression = parts[0]
+        for p in parts[1:]:
+            expr = And(left=expr, right=p)
+        return expr
+
+    @staticmethod
+    def _temporal_boundaries(  # noqa: PLR0911
+        transform: object, min_val: object, max_val: object
+    ) -> tuple[object | None, object | None]:
+        """Compute [lower, upper) boundaries for a temporal transform."""
+        from datetime import date, datetime, timedelta
+
+        from pyiceberg.transforms import (
+            DayTransform,
+            HourTransform,
+            MonthTransform,
+            YearTransform,
+        )
+
+        if isinstance(transform, DayTransform):
+            if isinstance(min_val, datetime) and isinstance(max_val, datetime):
+                lower = min_val.replace(hour=0, minute=0, second=0, microsecond=0)
+                upper = max_val.replace(hour=0, minute=0, second=0, microsecond=0)
+                return lower, upper + timedelta(days=1)
+            if isinstance(min_val, date) and isinstance(max_val, date):
+                return min_val, max_val + timedelta(days=1)
+
+        if isinstance(transform, MonthTransform):
+            if isinstance(min_val, datetime) and isinstance(max_val, datetime):
+                lower = min_val.replace(
+                    day=1,
+                    hour=0,
+                    minute=0,
+                    second=0,
+                    microsecond=0,
+                )
+                ny, nm = _next_month(max_val.year, max_val.month)
+                upper = max_val.replace(
+                    year=ny,
+                    month=nm,
+                    day=1,
+                    hour=0,
+                    minute=0,
+                    second=0,
+                    microsecond=0,
+                )
+                return lower, upper
+            if isinstance(min_val, date) and isinstance(max_val, date):
+                ny, nm = _next_month(max_val.year, max_val.month)
+                return min_val.replace(day=1), date(ny, nm, 1)
+
+        if isinstance(transform, YearTransform):
+            if isinstance(min_val, datetime) and isinstance(max_val, datetime):
+                lower = min_val.replace(
+                    month=1,
+                    day=1,
+                    hour=0,
+                    minute=0,
+                    second=0,
+                    microsecond=0,
+                )
+                upper = max_val.replace(
+                    year=max_val.year + 1,
+                    month=1,
+                    day=1,
+                    hour=0,
+                    minute=0,
+                    second=0,
+                    microsecond=0,
+                )
+                return lower, upper
+            if isinstance(min_val, date) and isinstance(max_val, date):
+                return date(min_val.year, 1, 1), date(max_val.year + 1, 1, 1)
+
+        if (
+            isinstance(transform, HourTransform)
+            and isinstance(min_val, datetime)
+            and isinstance(max_val, datetime)
+        ):
+            lower = min_val.replace(minute=0, second=0, microsecond=0)
+            upper = max_val.replace(minute=0, second=0, microsecond=0)
+            return lower, upper + timedelta(hours=1)
+
+        return None, None
+
     def _partition_filter_from_arrow(
         self,
         arrow_table: pa.Table,
         tbl: PyIcebergTable,
     ) -> BooleanExpression:
-        """Build an overwrite filter from identity-partition values in arrow.
+        """Build an overwrite filter from partition values in the arrow data.
 
-        When the partition spec mixes identity and transform fields, pyiceberg
-        cannot dynamic-overwrite. We narrow the delete to the identity slice
-        present in the incoming data; transform-only fields stay implicit
-        (their values follow from the data being written).
+        Identity-partitioned columns use exact value matching. Transform-only
+        partition specs (e.g. ``days(ts)``) use range filters derived from the
+        data's min/max values so only touched partitions are replaced.
         """
         from pyiceberg.expressions import AlwaysTrue
 
         identity_cols = self._identity_partition_columns(tbl)
-        if not identity_cols:
-            return AlwaysTrue()
+        if identity_cols:
+            present = [c for c in identity_cols if c in arrow_table.schema.names]
+            if present:
+                distinct_tbl = arrow_table.select(present).group_by(present).aggregate([])
+                return self._expression_from_distinct(distinct_tbl, present)
 
-        present = [c for c in identity_cols if c in arrow_table.schema.names]
-        if not present:
-            return AlwaysTrue()
+        transform_fields = self._transform_partition_fields(tbl)
+        if transform_fields:
+            expr = self._range_filter_from_arrow(arrow_table, transform_fields)
+            if expr is not None:
+                return expr
 
-        distinct_tbl = arrow_table.select(present).group_by(present).aggregate([])
-        return self._expression_from_distinct(distinct_tbl, present)
+        return AlwaysTrue()
 
     def _expression_from_distinct(
         self,
@@ -388,6 +537,51 @@ class IcebergWriter:
         for rf in row_filters[1:]:
             result = Or(left=result, right=rf)
         return result
+
+    def _range_filter_from_sql(
+        self,
+        sql: str,
+        transform_fields: list[tuple[str, object]],
+    ) -> BooleanExpression | None:
+        """Run ``SELECT MIN/MAX`` per transform source column and build range filter."""
+        from pyiceberg.expressions import And, GreaterThanOrEqual, LessThan
+
+        agg_parts = []
+        col_names = []
+        for col_name, _ in transform_fields:
+            agg_parts.append(f'MIN("{col_name}") AS "{col_name}_min"')
+            agg_parts.append(f'MAX("{col_name}") AS "{col_name}_max"')
+            col_names.append(col_name)
+
+        agg_sql = f"SELECT {', '.join(agg_parts)} FROM ({sql})"
+        relation = self._engine.execute(agg_sql)
+        rows = relation.arrow().read_all().to_pylist()
+        if not rows:
+            return None
+        agg_row = rows[0]
+
+        parts: list[BooleanExpression] = []
+        for col_name, transform in transform_fields:
+            min_val = agg_row[f"{col_name}_min"]
+            max_val = agg_row[f"{col_name}_max"]
+            if min_val is None or max_val is None:
+                return None
+            lower, upper = self._temporal_boundaries(transform, min_val, max_val)
+            if lower is None or upper is None:
+                return None
+            parts.append(
+                And(
+                    left=GreaterThanOrEqual(term=col_name, literal=lower),  # type: ignore[arg-type,call-arg]
+                    right=LessThan(term=col_name, literal=upper),  # type: ignore[arg-type,call-arg]
+                )
+            )
+
+        if not parts:
+            return None
+        expr: BooleanExpression = parts[0]
+        for p in parts[1:]:
+            expr = And(left=expr, right=p)
+        return expr
 
     def _txn_stream_append(
         self,

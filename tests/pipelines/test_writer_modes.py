@@ -192,8 +192,8 @@ def test_sql_streaming_overwrite_partition_scoped(lake: Lakehouse) -> None:
     assert sorted(year_2024) == [30, 40], "2024 partition should be replaced"
 
 
-def test_non_identity_transform_falls_back_to_full_replacement(lake: Lakehouse) -> None:
-    """Non-identity partition (e.g. DayTransform) → full replacement on overwrite."""
+def test_day_transform_overwrite_scoped_to_partition(lake: Lakehouse) -> None:
+    """Overwrite on day()-partitioned table replaces only touched day partitions."""
     iceberg_schema = Schema(
         NestedField(field_id=1, name="ts", field_type=TimestamptzType(), required=False),
         NestedField(field_id=2, name="value", field_type=LongType(), required=False),
@@ -227,8 +227,10 @@ def test_non_identity_transform_falls_back_to_full_replacement(lake: Lakehouse) 
     lake.to_lake(replacement, database="db", table="daypart", mode="overwrite")
 
     out = _read_back(lake, "db", "daypart")
-    assert out.num_rows == 1, "non-identity transform → full replacement, not scoped"
-    assert out.column("value").to_pylist() == [99]
+    rows = {r["value"] for r in out.to_pylist()}
+    assert out.num_rows == 2, "day-transform overwrite should be scoped, not full replacement"
+    assert 1 in rows, "2024-01-01 partition should be untouched"
+    assert 99 in rows, "2024-06-15 partition should be replaced"
 
 
 def test_dynamic_partition_overwrite_three_column_key(lake: Lakehouse) -> None:
@@ -303,13 +305,44 @@ def test_sql_overwrite_multi_column_partition(lake: Lakehouse) -> None:
 # ------------------------------------ non-identity / mixed partition overwrite
 
 
-def test_overwrite_year_transform_only_partition(lake: Lakehouse) -> None:
-    """Overwrite on a year()-only partitioned table replaces the full table.
+def test_sql_overwrite_year_transform_scoped(lake: Lakehouse) -> None:
+    """SQL overwrite on year()-partitioned table replaces only touched year partitions."""
+    from datetime import date
 
-    No identity partition column exists, so the filter falls back to
-    ``AlwaysTrue`` — full replacement. Validates the path doesn't crash on
-    pyiceberg's dynamic-overwrite restriction.
-    """
+    iceberg_schema = Schema(
+        NestedField(field_id=1, name="trade_date", field_type=DateType(), required=False),
+        NestedField(field_id=2, name="value", field_type=LongType(), required=False),
+    )
+    spec = PartitionSpec(
+        PartitionField(source_id=1, field_id=1000, transform=YearTransform(), name="trade_year"),
+    )
+
+    initial = pl.DataFrame(
+        {
+            "trade_date": [date(2023, 6, 1), date(2024, 6, 1)],
+            "value": [1, 2],
+        }
+    )
+    lake.to_lake(
+        initial, database="db", table="sqlyear", schema=iceberg_schema, partition_spec=spec
+    )
+
+    lake.to_lake(
+        "SELECT DATE '2024-06-01' AS trade_date, 99 AS value",
+        database="db",
+        table="sqlyear",
+        mode="overwrite",
+    )
+
+    out = _read_back(lake, "db", "sqlyear")
+    rows_by_value = {r["value"] for r in out.to_pylist()}
+    assert out.num_rows == 2, "SQL year-transform overwrite should be scoped"
+    assert 1 in rows_by_value, "2023 partition should be untouched"
+    assert 99 in rows_by_value, "2024 partition should be replaced"
+
+
+def test_year_transform_overwrite_scoped_to_partition(lake: Lakehouse) -> None:
+    """Overwrite on year()-partitioned table replaces only touched year partitions."""
     from datetime import date
 
     iceberg_schema = Schema(
@@ -334,9 +367,10 @@ def test_overwrite_year_transform_only_partition(lake: Lakehouse) -> None:
     lake.to_lake(update, database="db", table="yearonly", mode="overwrite")
 
     out = _read_back(lake, "db", "yearonly")
-    rows = out.to_pylist()
-    assert len(rows) == 1
-    assert rows[0]["value"] == 99
+    rows_by_value = {r["value"] for r in out.to_pylist()}
+    assert out.num_rows == 2, "year-transform overwrite should be scoped, not full replacement"
+    assert 1 in rows_by_value, "2023 partition should be untouched"
+    assert 99 in rows_by_value, "2024 partition should be replaced"
 
 
 def test_overwrite_mixed_identity_and_year_partition(lake: Lakehouse) -> None:
@@ -486,6 +520,32 @@ def test_empty_record_batch_reader_overwrite_preserves_data(lake: Lakehouse) -> 
 
     out = _read_back(lake, "db", "empty_rbr")
     assert out.num_rows == 3, "empty overwrite must not delete existing rows"
+
+
+def test_empty_arrow_overwrite_preserves_transform_only_partitioned_table(lake: Lakehouse) -> None:
+    """Empty arrow on overwrite must not wipe a transform-only partitioned table."""
+    from datetime import date
+
+    iceberg_schema = Schema(
+        NestedField(field_id=1, name="trade_date", field_type=DateType(), required=False),
+        NestedField(field_id=2, name="value", field_type=LongType(), required=False),
+    )
+    spec = PartitionSpec(
+        PartitionField(source_id=1, field_id=1000, transform=YearTransform(), name="trade_year"),
+    )
+
+    initial = pl.DataFrame({"trade_date": [date(2023, 6, 1), date(2024, 6, 1)], "value": [1, 2]})
+    lake.to_lake(
+        initial, database="db", table="empty_yr", schema=iceberg_schema, partition_spec=spec
+    )
+
+    empty = pa.table(
+        {"trade_date": pa.array([], type=pa.date32()), "value": pa.array([], type=pa.int64())}
+    )
+    lake.to_lake(empty, database="db", table="empty_yr", mode="overwrite")
+
+    out = _read_back(lake, "db", "empty_yr")
+    assert out.num_rows == 2, "empty overwrite must not delete existing rows"
 
 
 # ----------------------------------------------------- explicit schema/partition
