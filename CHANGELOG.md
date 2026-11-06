@@ -18,8 +18,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   over 100 GB), with unit prices and sources. README gains a "What it
   costs" section.
 - **GitHub OIDC for ECR publish**: `publish-ecr.yml` assumes
-  `vars.AWS_OIDC_ROLE_ARN` when set and falls back to static keys
-  otherwise; `scripts/github-oidc-bootstrap.sh` creates the OIDC provider,
+  `vars.AWS_OIDC_ROLE_ARN`, with no static-key fallback;
+  `scripts/github-oidc-bootstrap.sh` creates the OIDC provider,
   role and ECR push policy.
 
 ### Fixed

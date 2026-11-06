@@ -40,22 +40,12 @@ jobs:
             exit 1
           fi
 
-      # OIDC is the intended auth mode for the public repo (no long-lived keys).
-      # Static keys remain only until vars.AWS_OIDC_ROLE_ARN is set; after that,
-      # delete the AWS_ACCESS_KEY and AWS_SECRET_ACCESS_KEY secrets.
+      # GitHub OIDC only: no long-lived keys. The role comes from
+      # scripts/github-oidc-bootstrap.sh and vars.AWS_OIDC_ROLE_ARN.
       - name: Configure AWS credentials (OIDC)
-        if: vars.AWS_OIDC_ROLE_ARN != ''
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_OIDC_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Configure AWS credentials (static keys)
-        if: vars.AWS_OIDC_ROLE_ARN == ''
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Login to Amazon ECR
