@@ -33,16 +33,31 @@ auto-streaming for larger-than-memory payloads and zero D+1 API patterns.
 - **Container-ready job runner.** Ship a `.py`, a directory, or a zipapp;
   resolve runtime deps from CLI flags, requirements files, or PEP 723
   inline metadata. Consumers don't need to publish their own image.
-- **Fraction-of-the-cost lakehouse.** No managed clusters spinning
-  idle, no per-compute-unit billing, no heavyweight runtimes that charge
-  you to sit around waiting for work. awebo runs as a short-lived Fargate
-  task (256 MB – 1 GB, spot-eligible) reading and writing plain S3 +
+- **Cents-a-day lakehouse.** No managed clusters spinning idle, no
+  per-compute-unit billing, no heavyweight runtimes that charge you to
+  sit around waiting for work. awebo runs as a short-lived Fargate task
+  (0.5 vCPU / 1 GB, spot by default) reading and writing plain S3 +
   Iceberg — you pay for the seconds your job actually runs and the
-  storage it touches. A recurring daily pipeline that would cost hundreds
-  on a managed platform lands in single-digit dollars per month.
+  storage it touches. A daily pipeline lands at **about 2 cents a day**;
+  an hourly pipeline over 100 GB stays **under a dollar a day**. Full
+  breakdown with list prices in [`docs/COSTS.md`](./docs/COSTS.md).
 - **Pairs with [tundra](https://github.com/samuel2pb/tundra)** for the
   Terraform substrate underneath — Fargate cluster, IAM, VPC, and the
-  S3 zones (`raw` / `sot` / `smt`) that Iceberg writes into.
+  S3 zones (`raw` / `sot` / `smt`) that Iceberg writes into. Together
+  they are a complete, open framework for anyone who wants efficient,
+  extremely cheap data pipelines without a platform team.
+
+## What it costs
+
+| Workload | Per day | Per month |
+| --- | ---: | ---: |
+| 1 daily job, 0.5 vCPU / 1 GB, 5 min on Spot, 10 GB lake | ≈ $0.02 | ≈ $0.53 |
+| 24 hourly jobs, 2 vCPU / 4 GB, 10 min on Spot, 100 GB lake | ≈ $0.89 | ≈ $27 |
+| Daily job on GitHub Actions `schedule` + Cloudflare R2 free tier | $0 | $0 |
+
+us-east-1 list prices, November 2026. Compute is under 10% of the bill;
+S3 requests and storage are the rest. See [`docs/COSTS.md`](./docs/COSTS.md)
+for the line-by-line model, the unit prices, and how to spend less.
 
 ## Quickstart
 
@@ -220,8 +235,16 @@ Remote *directories* are not supported (fsspec single-shot fetch). Zip
 your bundle and upload that.
 
 Trailing arguments are forwarded to the job as `sys.argv[1:]`. The
-container image (built by `.github/workflows/publish-ecr.yml`) uses the
-same entrypoint:
+public container image is published to GitHub Container Registry by
+[`publish-ghcr.yml`](.github/workflows/publish-ghcr.yml) on every push
+to `main` (`latest`) and every `v*` tag:
+
+```bash
+docker pull ghcr.io/samuel2pb/awebo:latest
+```
+
+It uses the same entrypoint. (`publish-ecr.yml` is the maintainer's
+private ECR mirror; set `AWS_ECR_REPO` to your own image if you fork.)
 
 ```bash
 # Minimal: Glue catalog, AWS creds from env
@@ -229,7 +252,7 @@ docker run --rm \
   -e AWEBO_CATALOG_TYPE=glue \
   -e AWS_REGION=us-east-1 \
   -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY \
-  $AWS_ECR_REPO:latest \
+  ghcr.io/samuel2pb/awebo:latest \
   s3://my-bucket/jobs/ingest.py
 
 # With runtime deps and script args
@@ -237,7 +260,7 @@ docker run --rm \
   -e AWEBO_CATALOG_TYPE=glue \
   -e AWS_REGION=us-east-1 \
   -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY \
-  $AWS_ECR_REPO:latest \
+  ghcr.io/samuel2pb/awebo:latest \
   --with httpx --with 'pydantic>=2.7' \
   s3://my-bucket/jobs/ingest.py --date 2024-01-15
 
@@ -250,7 +273,7 @@ docker run --rm \
   -e AWEBO_S3_ACCESS_KEY_ID=minioadmin \
   -e AWEBO_S3_SECRET_ACCESS_KEY=minioadmin \
   -e AWEBO_S3_PATH_STYLE=true \
-  $AWS_ECR_REPO:latest \
+  ghcr.io/samuel2pb/awebo:latest \
   ./jobs/transform.py
 ```
 
@@ -341,7 +364,7 @@ minimal VPC, and an ECS cluster with task roles and task definitions."*
 | `modules/aws/platform-buckets` | tfstate / logs / artifacts / athena buckets for the platform itself. |
 | `modules/aws/vpc` | Minimal `/27` VPC the Fargate tasks run in. |
 | `modules/aws/iam-container-role` | Task role assumed by awebo containers (Glue + S3 perms). |
-| `modules/aws/ecs-cluster` + `ecs-task-definition` | Fargate cluster + task def that run `python -m awebo <job>` against the image produced by [`publish-ecr.yml`](.github/workflows/publish-ecr.yml). |
+| `modules/aws/ecs-cluster` + `ecs-task-definition` | Fargate cluster + task def that run `python -m awebo <job>` against `ghcr.io/samuel2pb/awebo` (or your own ECR mirror from [`publish-ecr.yml`](.github/workflows/publish-ecr.yml)). |
 | `modules/aws/main` | Composition that wires the rest together. Accepts `task_image` (point it at the awebo ECR URI), `task_environment`, and `task_secrets` so consumer Terraform doesn't have to wire each module manually. |
 
 Pin a tundra version in the consumer's Terraform (latest tag is `v0.1.0`)
@@ -350,7 +373,7 @@ and call `terraform apply`; awebo handles everything from there.
 ```hcl
 module "platform" {
   source     = "git::https://github.com/samuel2pb/tundra.git//modules/aws/main?ref=v0.1.0"
-  task_image = "<account>.dkr.ecr.<region>.amazonaws.com/awebo:latest"
+  task_image = "ghcr.io/samuel2pb/awebo:latest"
   # ... task_environment / task_secrets / account_id / account_name ...
 }
 ```
@@ -399,8 +422,9 @@ make test-mem    # pytest-memray suite
 make check       # everything pre-commit runs
 ```
 
-`pre-commit` hooks gate ruff, mypy strict, and the test matrix on every
-commit. Update [`CHANGELOG.md`](./CHANGELOG.md) under `## [Unreleased]`
+`pre-commit` hooks gate gitleaks, ruff, mypy strict, and the test matrix
+on every commit. See [`SECURITY.md`](./SECURITY.md) for how to report
+vulnerabilities. Update [`CHANGELOG.md`](./CHANGELOG.md) under `## [Unreleased]`
 before opening a PR.
 
 See [`CLAUDE.md`](./CLAUDE.md) for architecture invariants and the

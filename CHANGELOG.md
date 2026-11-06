@@ -6,6 +6,22 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Public-repo hardening**: `publish-ghcr.yml` publishes the container
+  image to `ghcr.io/samuel2pb/awebo` using only `GITHUB_TOKEN`;
+  `secret-scan.yml` and a `gitleaks` pre-commit hook scan every commit;
+  `SECURITY.md` documents vulnerability reporting. `publish-ecr.yml` now
+  masks the registry host (AWS account ID) in workflow logs.
+- **`docs/COSTS.md`**: line-by-line cost model for running pipelines on
+  awebo + tundra (≈ 2¢/day for a daily job, < $1/day for an hourly job
+  over 100 GB), with unit prices and sources. README gains a "What it
+  costs" section.
+- **GitHub OIDC for ECR publish**: `publish-ecr.yml` assumes
+  `vars.AWS_OIDC_ROLE_ARN` when set and falls back to static keys
+  otherwise; `scripts/github-oidc-bootstrap.sh` creates the OIDC provider,
+  role and ECR push policy.
+
 ### Fixed
 
 - **Transform-only partition overwrite now scoped (`#27`)**: `days()`,
