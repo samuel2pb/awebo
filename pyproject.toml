@@ -5,7 +5,7 @@ description = "DuckDB-powered data wrangler for Apache Iceberg lakehouses across
 readme = "README.md"
 license = { text = "Apache-2.0" }
 authors = [
-    { name = "Samuel Barbosa", email = "samuelpedropbarbosa@gmail.com" },
+    { name = "Samuel Barbosa", email = "85443064+samuel2pb@users.noreply.github.com" },
 ]
 requires-python = ">=3.12"
 keywords = ["iceberg", "duckdb", "lakehouse", "polars", "data", "aws", "glue"]

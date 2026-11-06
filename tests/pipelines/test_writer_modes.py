@@ -375,7 +375,7 @@ def test_year_transform_overwrite_scoped_to_partition(lake: Lakehouse) -> None:
 
 def test_overwrite_mixed_identity_and_year_partition(lake: Lakehouse) -> None:
     """Mixed spec: identity logical_year + year(trade_date) — overwrite by
-    identity slice (year-by-year backfill pattern used by hyoko b3_cotahist)."""
+    identity slice (year-by-year backfill pattern for exchange price history)."""
     from datetime import date
 
     iceberg_schema = Schema(

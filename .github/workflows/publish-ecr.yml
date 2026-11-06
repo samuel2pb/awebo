@@ -11,6 +11,7 @@ on:
 
 permissions:
   contents: read
+  id-token: write
 
 concurrency:
   group: ecr-${{ github.ref }}
@@ -27,6 +28,9 @@ jobs:
 
       - name: Validate AWS_ECR_REPO
         run: |
+          # Mask the registry host (contains the AWS account ID) so it never
+          # shows up in public workflow logs.
+          echo "::add-mask::${AWS_ECR_REPO%%/*}"
           if [ -z "${AWS_ECR_REPO:-}" ]; then
             echo "::error::AWS_ECR_REPO repository variable is not set"
             exit 1
@@ -36,7 +40,18 @@ jobs:
             exit 1
           fi
 
-      - name: Configure AWS credentials
+      # OIDC is the intended auth mode for the public repo (no long-lived keys).
+      # Static keys remain only until vars.AWS_OIDC_ROLE_ARN is set; after that,
+      # delete the AWS_ACCESS_KEY and AWS_SECRET_ACCESS_KEY secrets.
+      - name: Configure AWS credentials (OIDC)
+        if: vars.AWS_OIDC_ROLE_ARN != ''
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_OIDC_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Configure AWS credentials (static keys)
+        if: vars.AWS_OIDC_ROLE_ARN == ''
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY }}
