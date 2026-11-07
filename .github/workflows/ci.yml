@@ -1,0 +1,60 @@
+name: CI
+
+# Lint, types and every test suite on each PR and on main. Runs fork PRs
+# too (after maintainer approval) with a read-only token and no secrets:
+# nothing here needs cloud credentials — integration tests are moto-backed.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: uv sync --all-extras --frozen
+
+      # The engine LOADs extensions and never INSTALLs them (CLAUDE.md
+      # invariant 6), so pre-install them like the Docker image does.
+      - name: Install DuckDB extensions
+        run: |
+          uv run python - <<'PY'
+          import duckdb
+          con = duckdb.connect(":memory:")
+          for ext in ("httpfs", "avro", "iceberg"):
+              con.install_extension(ext)
+          con.close()
+          PY
+
+      - name: Lint, format, types
+        run: make check
+
+      - name: Unit + pipeline tests
+        run: make test
+
+      - name: Property tests
+        run: make test-prop
+
+      - name: Memory tests
+        run: make test-mem
+
+      - name: Integration tests (moto)
+        run: make test-int
