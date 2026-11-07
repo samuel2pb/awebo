@@ -34,7 +34,7 @@ def test_nested_schema_renders_as_duckdb_types() -> None:
     )
 
     assert column_definitions(schema) == [
-        ("id", "BIGINT"),
+        ("id", "BIGINT NOT NULL"),
         ("amount", "DECIMAL(18, 2)"),
         ("ts", "TIMESTAMPTZ"),
         ("tags", "VARCHAR[]"),

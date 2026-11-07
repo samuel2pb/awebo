@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, cast
 
 import polars as pl
 import pyarrow as pa
+import pytest
 from pyiceberg.partitioning import PartitionField, PartitionSpec
 from pyiceberg.schema import Schema
 from pyiceberg.transforms import BucketTransform, IdentityTransform, TruncateTransform
@@ -212,3 +213,88 @@ def test_sql_source_may_end_with_a_semicolon(lake: Lakehouse) -> None:
     lake.to_lake("SELECT 1 AS id;\n", database="db", table="semi")
 
     assert [r["id"] for r in _rows(lake, "db", "semi")] == [1]
+
+
+def test_day_overwrite_uses_utc_partitions_whatever_the_session_zone(lake: Lakehouse) -> None:
+    """Iceberg temporal transforms are UTC; the session TimeZone must not move boundaries."""
+    from datetime import UTC, datetime
+
+    from pyiceberg.transforms import DayTransform
+    from pyiceberg.types import TimestamptzType
+
+    lake._engine.connection.sql("SET TimeZone = 'America/Sao_Paulo'")
+    schema = Schema(
+        NestedField(field_id=1, name="ts", field_type=TimestamptzType(), required=False),
+        NestedField(field_id=2, name="v", field_type=LongType(), required=False),
+    )
+    spec = PartitionSpec(
+        PartitionField(source_id=1, field_id=1000, transform=DayTransform(), name="d")
+    )
+    initial = pa.table(
+        {
+            "ts": pa.array(
+                [datetime(2024, 1, 1, 12, tzinfo=UTC), datetime(2024, 1, 2, 1, tzinfo=UTC)],
+                pa.timestamp("us", tz="UTC"),
+            ),
+            "v": pa.array([1, 2], pa.int64()),
+        }
+    )
+    lake.to_lake(initial, database="db", table="utc", schema=schema, partition_spec=spec)
+
+    update = pa.table(
+        {
+            "ts": pa.array([datetime(2024, 1, 1, 20, tzinfo=UTC)], pa.timestamp("us", tz="UTC")),
+            "v": pa.array([99], pa.int64()),
+        }
+    )
+    lake.to_lake(update, database="db", table="utc", mode="overwrite")
+
+    assert sorted(cast("int", r["v"]) for r in _rows(lake, "db", "utc")) == [2, 99]
+
+
+def test_lossy_type_mismatch_is_rejected(lake: Lakehouse) -> None:
+    from awebo.exceptions import WriteError
+
+    lake.to_lake(
+        pa.table({"id": pa.array([1], pa.int64()), "s": pa.array(["a"])}),
+        database="db",
+        table="strict",
+    )
+
+    for bad in (
+        pa.table({"id": pa.array([1.5]), "s": pa.array(["b"])}),
+        pa.table({"id": pa.array([2], pa.int64()), "s": pa.array([5], pa.int64())}),
+    ):
+        with pytest.raises(WriteError, match="incompatible"):
+            lake.to_lake(bad, database="db", table="strict")
+
+    assert [r["id"] for r in _rows(lake, "db", "strict")] == [1]
+
+
+def test_narrower_and_all_null_columns_are_accepted(lake: Lakehouse) -> None:
+    lake.to_lake(
+        pa.table({"id": pa.array([1], pa.int64()), "s": pa.array(["a"])}),
+        database="db",
+        table="lenient",
+    )
+
+    lake.to_lake(
+        pa.table({"id": pa.array([2], pa.int32()), "s": pa.array([None], pa.null())}),
+        database="db",
+        table="lenient",
+    )
+
+    assert sorted(cast("int", r["id"]) for r in _rows(lake, "db", "lenient")) == [1, 2]
+
+
+def test_required_schema_fields_stay_required(lake: Lakehouse) -> None:
+    schema = Schema(
+        NestedField(field_id=1, name="id", field_type=LongType(), required=True),
+        NestedField(field_id=2, name="name", field_type=StringType(), required=False),
+    )
+    lake.to_lake(
+        pl.DataFrame({"id": [1], "name": ["a"]}), database="db", table="req", schema=schema
+    )
+
+    fields = {f.name: f.required for f in _load(lake, "db", "req").schema().fields}
+    assert fields == {"id": True, "name": False}

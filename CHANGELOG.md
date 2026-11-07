@@ -29,6 +29,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
     re-partitioned spuriously.
   - Schema evolution: new columns added; lossless widenings only
     (int → long, float → double, decimal precision).
+  - Lossy writes are rejected with `WriteError` ("incompatible column
+    types") instead of being cast silently: a `double` into a `long`
+    column, an integer into a `string` column, a `timestamp_ns` into a
+    `timestamp` column. Narrower integers, `float` → `double`, decimal
+    precision and all-NULL columns are still accepted. (PyIceberg rejected
+    these too.)
+  - Required (`NestedField(required=True)`) fields are created `NOT NULL`
+    and stay required in the Iceberg schema.
+  - Temporal partition overwrite (`year`/`month`/`day`/`hour`) on
+    `timestamptz` columns buckets by UTC, as Iceberg does, whatever the
+    session `TimeZone`. Before this fix a non-UTC host could delete rows
+    from the wrong day.
 - **REST and Cloudflare R2 catalogs are attached in DuckDB.**
   `ATTACH '<warehouse>' (TYPE iceberg, URI ...)` with a `TYPE iceberg`
   secret (`TOKEN`, or OAuth2 `CLIENT_ID` / `CLIENT_SECRET` from

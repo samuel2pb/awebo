@@ -163,19 +163,28 @@ class IcebergWriter:
                 log.warning("empty source — skipping overwrite of %s", target.identifier)
                 return
             columns = self._describe(f"SELECT * FROM {stage}")
-            self._prepare_table(target, columns, plan)
+            table_columns = self._prepare_table(target, columns, plan)
             terms = self._current_partition_terms(target)
+            delete_sql = self._scoped_delete_sql(target, stage, columns, table_columns, terms)
             with self._engine.transaction():
-                self._engine.execute(self._scoped_delete_sql(target, stage, columns, terms))
+                self._engine.execute(delete_sql)
                 self._engine.execute(f"INSERT INTO {target.sql} BY NAME SELECT * FROM {stage}")
         finally:
             self._engine.execute(f"DROP TABLE IF EXISTS {stage}")
 
     @staticmethod
     def _scoped_delete_sql(
-        target: _Target, stage: str, columns: Columns, terms: list[PartitionTerm]
+        target: _Target,
+        stage: str,
+        columns: Columns,
+        table_columns: Columns,
+        terms: list[PartitionTerm],
     ) -> str:
-        """``DELETE`` every target row in a partition the staged data touches."""
+        """``DELETE`` every target row in a partition the staged data touches.
+
+        Staged values are cast to the table's column type first, exactly as
+        the ``INSERT`` will cast them, so both sides route identically.
+        """
         if not terms:
             return f"DELETE FROM {target.sql}"
         keys: list[str] = []
@@ -183,9 +192,15 @@ class IcebergWriter:
         for i, term in enumerate(terms):
             key = f"k{i}"
             col = quote_ident(term.column)
-            staged = term.scope_expr(col) if term.column in columns else "NULL"
+            ttype = table_columns.get(term.column)
+            if term.column not in columns:
+                staged = "NULL"
+            elif ttype is None:
+                staged = term.scope_expr(col)
+            else:
+                staged = term.scope_expr(f"CAST({col} AS {ttype})", ttype)
             keys.append(f"{staged} AS {key}")
-            matches.append(f"p.{key} IS NOT DISTINCT FROM {term.scope_expr(f'tgt.{col}')}")
+            matches.append(f"p.{key} IS NOT DISTINCT FROM {term.scope_expr(f'tgt.{col}', ttype)}")
         return (
             f"DELETE FROM {target.sql} AS tgt WHERE EXISTS ("
             f"SELECT 1 FROM (SELECT DISTINCT {', '.join(keys)} FROM {stage}) AS p "
@@ -194,29 +209,51 @@ class IcebergWriter:
 
     # -------------------------------------------------------- table lifecycle
 
-    def _prepare_table(self, target: _Target, source_columns: Columns, plan: _TablePlan) -> None:
-        """Create the table, or evolve schema / partitioning / properties to the plan."""
+    def _prepare_table(self, target: _Target, source_columns: Columns, plan: _TablePlan) -> Columns:
+        """Create the table, or evolve schema / partitioning / properties to the plan.
+
+        Returns the table's columns as the write will see them.
+        """
         self._engine.execute(f"CREATE SCHEMA IF NOT EXISTS {target.schema_sql}")
         existing = self._table_columns(target)
         if existing is None:
             self._create_table(target, source_columns, plan)
-            if plan.schema is not None and plan.schema_evolution:
-                created = self._table_columns(target) or {}
-                self._evolve_schema(target, created, source_columns)
-            return
+            if plan.schema is None:
+                return dict(source_columns)
+            existing = self._table_columns(target) or {}
+            return self._reconcile_schema(target, existing, source_columns, plan)
 
-        if plan.schema_evolution:
-            self._evolve_schema(target, existing, source_columns)
-        else:
-            extra = sorted(set(source_columns) - set(existing))
-            if extra:
-                raise WriteError(
-                    f"schema evolution disabled and {target.identifier!r} lacks columns {extra}"
-                )
+        columns = self._reconcile_schema(target, existing, source_columns, plan)
         if plan.partition_spec is not None:
             self._evolve_partitioning(target, plan)
         if plan.properties:
             self._sync_properties(target, plan.properties)
+        return columns
+
+    def _reconcile_schema(
+        self, target: _Target, existing: Columns, incoming: Columns, plan: _TablePlan
+    ) -> Columns:
+        """Reject lossy writes, then evolve the table schema when allowed."""
+        missing = sorted(set(incoming) - set(existing))
+        if missing and not plan.schema_evolution:
+            raise WriteError(
+                f"schema evolution disabled and {target.identifier!r} lacks columns {missing}"
+            )
+        incompatible = [
+            f"{name} {src} -> {existing[name]}"
+            for name, src in incoming.items()
+            if name in existing
+            and not _fits(src, existing[name])
+            and not (plan.schema_evolution and _is_widening(existing[name], src))
+        ]
+        if incompatible:
+            raise WriteError(
+                f"incompatible column types for {target.identifier!r}: "
+                f"{', '.join(incompatible)}; cast the source to the table type"
+            )
+        if not plan.schema_evolution:
+            return dict(existing)
+        return self._evolve_schema(target, existing, incoming)
 
     def _create_table(self, target: _Target, source_columns: Columns, plan: _TablePlan) -> None:
         log.debug("creating table %s", target.identifier)
@@ -260,8 +297,9 @@ class IcebergWriter:
         rows = self._engine.fetch_rows(f"DESCRIBE {relation_sql}")
         return {str(row[0]): str(row[1]) for row in rows}
 
-    def _evolve_schema(self, target: _Target, existing: Columns, incoming: Columns) -> None:
-        """Add new columns and apply lossless type widenings."""
+    def _evolve_schema(self, target: _Target, existing: Columns, incoming: Columns) -> Columns:
+        """Add new columns and apply lossless type widenings; return the result."""
+        columns = dict(existing)
         try:
             for name, dtype in incoming.items():
                 current = existing.get(name)
@@ -269,12 +307,15 @@ class IcebergWriter:
                     self._engine.execute(
                         f"ALTER TABLE {target.sql} ADD COLUMN {quote_ident(name)} {dtype}"
                     )
+                    columns[name] = dtype
                 elif current != dtype and _is_widening(current, dtype):
                     self._engine.execute(
                         f"ALTER TABLE {target.sql} ALTER COLUMN {quote_ident(name)} TYPE {dtype}"
                     )
+                    columns[name] = dtype
         except Exception as exc:
             raise WriteError(f"schema evolution failed: {exc}") from exc
+        return columns
 
     def _current_partition_terms(self, target: _Target) -> list[PartitionTerm]:
         rows = self._engine.fetch_rows(
@@ -430,6 +471,38 @@ class _TablePlan:
 
 
 _DECIMAL_RE = re.compile(r"^DECIMAL\((\d+),\s*(\d+)\)$")
+
+
+# Implicit casts INSERT may apply without losing information.
+_LOSSLESS_CASTS: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("TINYINT", "SMALLINT"),
+        ("TINYINT", "INTEGER"),
+        ("TINYINT", "BIGINT"),
+        ("SMALLINT", "INTEGER"),
+        ("SMALLINT", "BIGINT"),
+        ("INTEGER", "BIGINT"),
+        ("UTINYINT", "SMALLINT"),
+        ("UTINYINT", "INTEGER"),
+        ("UTINYINT", "BIGINT"),
+        ("USMALLINT", "INTEGER"),
+        ("USMALLINT", "BIGINT"),
+        ("UINTEGER", "BIGINT"),
+        ("FLOAT", "DOUBLE"),
+    }
+)
+_NULL_TYPE = '"NULL"'
+
+
+def _fits(source: str, table: str) -> bool:
+    """True when ``INSERT`` casts a ``source`` column into ``table`` losslessly."""
+    if source in (table, _NULL_TYPE) or (source, table) in _LOSSLESS_CASTS:
+        return True
+    src = _DECIMAL_RE.match(source)
+    dst = _DECIMAL_RE.match(table)
+    if src is None or dst is None:
+        return False
+    return src.group(2) == dst.group(2) and int(src.group(1)) <= int(dst.group(1))
 
 
 def _is_widening(current: str, incoming: str) -> bool:

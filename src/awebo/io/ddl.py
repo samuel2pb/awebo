@@ -75,8 +75,15 @@ def duckdb_type(field_type: IcebergType) -> str:
 
 
 def column_definitions(schema: Schema) -> list[tuple[str, str]]:
-    """Return ``(name, duckdb_type)`` pairs for the top-level schema fields."""
-    return [(f.name, duckdb_type(f.field_type)) for f in schema.fields]
+    """Return ``(name, column_type)`` pairs for the top-level schema fields.
+
+    Required fields render as ``<type> NOT NULL`` so the created table keeps
+    the Iceberg ``required`` flag.
+    """
+    return [
+        (f.name, duckdb_type(f.field_type) + (" NOT NULL" if f.required else ""))
+        for f in schema.fields
+    ]
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,15 +128,21 @@ class PartitionTerm:
             return f"{self.transform}({self.param}, {col})"
         return f"{self.transform}({col})"
 
-    def scope_expr(self, column_sql: str) -> str:
+    def scope_expr(self, column_sql: str, column_type: str | None = None) -> str:
         """Render the value this term routes ``column_sql`` to.
 
         Rows from the incoming data and rows already in the table belong to
         the same partition iff these expressions are not distinct.
+
+        Iceberg temporal transforms bucket ``timestamptz`` values by UTC, so a
+        ``column_type`` with a time zone is shifted to UTC before
+        ``date_trunc``: the session ``TimeZone`` never moves a boundary.
         """
         if self.transform == "identity":
             return column_sql
         if self.transform in _TEMPORAL:
+            if column_type is not None and "WITH TIME ZONE" in column_type.upper():
+                column_sql = f"timezone('UTC', {column_sql})"
             return f"date_trunc('{self.transform}', {column_sql})"
         if self.transform == "bucket":
             return f"iceberg_bucket({self.param}, {column_sql})"
