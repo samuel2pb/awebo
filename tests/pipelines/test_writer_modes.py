@@ -40,6 +40,17 @@ def _load_table(lake: Lakehouse, database: str, table: str) -> PyIcebergTable:
     return catalog.load_table(f"{database}.{table}")
 
 
+def _partitioned_on(tbl: PyIcebergTable) -> set[tuple[str, str]]:
+    """(source column, transform) pairs of the current spec.
+
+    Partition *field names* are chosen by the engine that writes the spec
+    (DuckDB names them like ``identity_year_1``), so tests compare what the
+    table partitions on instead.
+    """
+    schema = tbl.schema()
+    return {(schema.find_field(f.source_id).name, str(f.transform)) for f in tbl.spec().fields}
+
+
 # -------------------------------------------------------------- overwrite mode
 
 
@@ -72,22 +83,22 @@ def test_overwrite_accepts_record_batch_reader(lake: Lakehouse) -> None:
     assert out.column("id").to_pylist() == [10]
 
 
-def test_overwrite_accepts_large_payload(streaming_lake: Lakehouse) -> None:
-    """streaming_lake has threshold=0; overwrite uses transactional streaming path."""
+def test_overwrite_accepts_large_payload(spill_lake: Lakehouse) -> None:
+    """Overwrite under a tight DuckDB memory limit."""
     df = pl.DataFrame({"id": list(range(100))})
-    streaming_lake.to_lake(df, database="db", table="t", mode="overwrite")
-    assert _read_back(streaming_lake, "db", "t").num_rows == 100
+    spill_lake.to_lake(df, database="db", table="t", mode="overwrite")
+    assert _read_back(spill_lake, "db", "t").num_rows == 100
 
 
-def test_streaming_overwrite_replaces_data(streaming_lake: Lakehouse) -> None:
-    """Streaming overwrite (threshold=0) replaces existing rows via transaction."""
+def test_streaming_overwrite_replaces_data(spill_lake: Lakehouse) -> None:
+    """Overwrite under a tight memory limit replaces existing rows in one transaction."""
     first = pl.DataFrame({"id": [1, 2, 3]})
-    streaming_lake.to_lake(first, database="db", table="strov")
+    spill_lake.to_lake(first, database="db", table="strov")
 
     second = pl.DataFrame({"id": [10, 20]})
-    streaming_lake.to_lake(second, database="db", table="strov", mode="overwrite")
+    spill_lake.to_lake(second, database="db", table="strov", mode="overwrite")
 
-    out = _read_back(streaming_lake, "db", "strov")
+    out = _read_back(spill_lake, "db", "strov")
     assert out.num_rows == 2
     assert sorted(int(v) for v in out.column("id").to_pylist() if v is not None) == [10, 20]
 
@@ -579,7 +590,7 @@ def test_explicit_schema_and_partition_spec_on_create(lake: Lakehouse) -> None:
     )
 
     tbl = _load_table(lake, "bronze", "filings")
-    assert tbl.spec().fields[0].name == "period_year"
+    assert _partitioned_on(tbl) == {("period_year", "identity")}
     assert _read_back(lake, "bronze", "filings").num_rows == 3
 
 
@@ -675,8 +686,7 @@ def test_partition_evolution_adds_field(lake: Lakehouse) -> None:
     )
 
     tbl = _load_table(lake, "db", "evo_part")
-    field_names = {f.name for f in tbl.spec().fields}
-    assert "region" in field_names
+    assert _partitioned_on(tbl) == {("year", "identity"), ("region", "identity")}
 
 
 def test_partition_evolution_noop_when_same(lake: Lakehouse) -> None:

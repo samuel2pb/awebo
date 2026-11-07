@@ -23,7 +23,6 @@ def builder_lake(tmp_path: Path) -> Iterator[Lakehouse]:
     warehouse = tmp_path / "warehouse"
     config = LakehouseConfig(
         catalog=CatalogSettings(type="local", name="test", warehouse=str(warehouse)),
-        streaming_threshold_mb=1,
         temp_dir=str(tmp_path / "duckdb_tmp"),
     )
     lake = (

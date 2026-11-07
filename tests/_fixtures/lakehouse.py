@@ -23,13 +23,12 @@ if TYPE_CHECKING:
 def make_test_lakehouse(
     tmp_path: Path,
     *,
-    streaming_threshold_mb: int = 1,
     emitter: LineageEmitter | None = None,
+    memory_limit: str | None = None,
 ) -> Lakehouse:
     """Build an offline Lakehouse rooted at ``tmp_path``.
 
-    ``streaming_threshold_mb`` defaults to 1MB so tests can trigger the
-    streaming write path with modest fixtures.
+    ``memory_limit`` caps DuckDB so tests can force spill-to-disk writes.
     """
     warehouse = tmp_path / "warehouse"
     config = LakehouseConfig(
@@ -39,8 +38,8 @@ def make_test_lakehouse(
             warehouse=str(warehouse),
         ),
         aws=None,
-        streaming_threshold_mb=streaming_threshold_mb,
         temp_dir=str(tmp_path / "duckdb_tmp"),
+        memory_limit=memory_limit,
     )
     catalog = LocalIcebergCatalogBackend("test_lake", warehouse)
     auth = NoopAuthProvider()

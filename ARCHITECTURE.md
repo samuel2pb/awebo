@@ -6,18 +6,19 @@
 
 ## TL;DR
 
-`awebo` is a thin facade (`Lakehouse`) over four cooperating engines:
+`awebo` is a thin facade (`Lakehouse`) over **DuckDB >= 2.0** and its
+native Iceberg support:
 
 | Concern | Engine | Used for |
 | --- | --- | --- |
-| Read SQL | **DuckDB** + `iceberg` extension | Vectorised `SELECT` over Iceberg tables and external files |
-| Write / DDL | **PyIceberg** | Table create, namespace create, schema evolution, append commits |
-| In-memory data plane | **Apache Arrow** | Zero-copy bridge between DuckDB and PyIceberg, streaming batches |
-| User-facing dataframe | **Polars** | Returned from `QueryResult.to_polars()` |
+| Read SQL | **DuckDB** + `iceberg` extension | Vectorised `SELECT` over Iceberg tables and external files, time travel |
+| Write / DDL | **DuckDB** + `iceberg` extension | `CREATE SCHEMA/TABLE`, `INSERT`, `DELETE`, `ALTER TABLE`, table properties — committed to the attached catalog |
+| In-memory data plane | **Apache Arrow** | Zero-copy scans of Arrow / Polars sources registered with DuckDB |
+| User-facing dataframe | **Polars** | Returned from `QueryResult.to_polars()` (DuckDB's native `.pl()`) |
+| Escape hatch | **PyIceberg** | `Lakehouse.pyiceberg_catalog()` only — maintenance with no SQL verb. awebo never calls it. |
 
-The split is deliberate: DuckDB owns reads (fast scan), PyIceberg owns
-writes (correct commits), Arrow is the lingua franca, Polars is the
-user-facing surface.
+DuckDB attaches the catalog once (`ATTACH ... (TYPE iceberg, ...)`) and
+every read and write goes through that one connection.
 
 ## Package layout (package-by-feature)
 
@@ -34,21 +35,19 @@ src/awebo/
 │   └── s3.py            #   S3AuthProvider (static S3-compat creds for MinIO, R2, Ceph)
 │
 ├── catalog/             # FEATURE: Iceberg catalog backends
-│   ├── base.py          #   CatalogBackend ABC: pyiceberg(), duckdb_attach_sql(), ensure_namespace()
-│   ├── glue.py          #   GlueCatalogBackend (AWS Glue + S3)
-│   ├── rest.py          #   RestCatalogBackend (Iceberg REST — Lakekeeper, Nessie, Polaris)
-│   └── cloudflare.py    #   CloudflareCatalogBackend (R2 — delegates to REST)
+│   ├── base.py          #   CatalogBackend ABC: duckdb_attach_sql(), table_location(), pyiceberg() (escape hatch)
+│   ├── glue.py          #   GlueCatalogBackend (Glue Iceberg REST, SigV4; cn-* regions via explicit URI)
+│   ├── rest.py          #   RestCatalogBackend (Iceberg REST — Lakekeeper, Nessie, Polaris; token / OAuth2 secret)
+│   └── cloudflare.py    #   CloudflareCatalogBackend (R2 Data Catalog — delegates to REST)
 │
 ├── query/               # FEATURE: read path
-│   ├── engine.py        #   QueryEngine — single DuckDB connection per Lakehouse
+│   ├── engine.py        #   QueryEngine — single DuckDB connection, register(), transaction()
 │   └── result.py        #   QueryResult — lazy: .to_polars/.to_arrow/.batches/.show
 │
 ├── io/                  # FEATURE: external file ingest + iceberg write
 │   ├── reader.py        #   FileReader — autodetects format, registers a DuckDB VIEW
-│   └── writer.py        #   IcebergWriter — auto-stream when payload > threshold
-│
-├── streaming/           # FEATURE: Arrow batch helpers shared by reader+writer
-│   └── batches.py       #   estimate_size_mb, iter_batches_from_*
+│   ├── writer.py        #   IcebergWriter — DuckDB INSERT / DELETE+INSERT, schema + partition evolution
+│   └── ddl.py           #   PyIceberg Schema / PartitionSpec → DuckDB DDL (pure functions)
 │
 ├── lineage/             # FEATURE: OpenLineage event emission
 │   ├── emitter.py       #   LineageEmitter protocol + NoopEmitter + HttpEmitter
@@ -73,7 +72,8 @@ tests under the same package name.
 | Add a new cloud's credentials | `src/awebo/auth/<cloud>.py` + register in `Lakehouse._build_auth` |
 | Add a new catalog backend (REST, Hive, Nessie) | `src/awebo/catalog/<name>.py` + register in `Lakehouse._build_catalog` |
 | Change the public surface | `src/awebo/lakehouse.py` and re-export in `src/awebo/__init__.py` |
-| Tune streaming threshold or batch size | `src/awebo/streaming/batches.py` and `src/awebo/config.py` |
+| Tune DuckDB memory / spill | `src/awebo/config.py` (`memory_limit`, `temp_dir`) and `src/awebo/query/engine.py` |
+| Change how writes map to SQL | `src/awebo/io/writer.py`; type / transform translation in `src/awebo/io/ddl.py` |
 | Add a new file format auto-detection | `src/awebo/io/reader.py` (`_EXT_TO_FUNC` table) |
 | Change how DuckDB is configured | `src/awebo/query/engine.py` |
 | Add a lineage emitter backend | `src/awebo/lineage/<name>.py` + register in `factory.create_emitter` |
@@ -87,20 +87,22 @@ tests under the same package name.
    Closed by `Lakehouse.close()` / context-manager exit.
 
 2. **Credentials resolved exactly once.** `AuthProvider.resolve()` caches.
-   Both PyIceberg and DuckDB receive the same `Credentials` struct — never
-   re-fetch (no D+1 STS calls).
+   DuckDB secrets (and the PyIceberg escape hatch) receive the same
+   `Credentials` struct — never re-fetch (no D+1 STS calls).
 
 3. **Catalog ATTACH is batched.** `CatalogBackend.duckdb_attach_sql()`
-   returns a list executed in a single loop; secret + ATTACH go together.
+   returns the secrets + one ATTACH, executed once per Lakehouse.
 
-4. **Writes go through PyIceberg, reads go through DuckDB.** Do not mix.
-   Both share Arrow batches as the data plane.
+4. **Reads and writes both go through DuckDB.** awebo never writes data
+   or DDL through PyIceberg; `pyiceberg()` exists only for
+   `Lakehouse.pyiceberg_catalog()`. Every SQL value is quoted via
+   `awebo._sql` (`quote_ident` / `quote_literal`).
 
-5. **Auto-streaming.** `IcebergWriter` measures payload size via
-   `estimate_size_mb`. Above `streaming_threshold_mb` (default 512MB), the
-   writer switches to a `RecordBatchReader` that DuckDB / Polars chunk on
-   demand — bounded memory regardless of source size. SQL writes are
-   *always* streamed (never materialised).
+5. **DuckDB bounds memory.** Sources are registered with DuckDB and
+   scanned zero-copy; `RecordBatchReader` / `LazyFrame` sources are pulled
+   on demand. DuckDB spills to `temp_dir` above `memory_limit`. Overwrite
+   stages the source once into a DuckDB temp table, then runs `DELETE` +
+   `INSERT` in one transaction (one atomic catalog commit).
 
 6. **No D+1 (N+1) API patterns.** When a feature needs the same data
    twice, fetch once and pass it down. Anywhere you see a loop calling an
@@ -122,16 +124,18 @@ user SQL ──► QueryEngine.execute ──► DuckDB (iceberg ext) ──► 
 
 ### Write path
 ```
-DataFrame / Arrow / SQL string
+DataFrame / LazyFrame / Arrow / RecordBatchReader / SQL string
         │
         ▼
-IcebergWriter._coerce_to_reader  ──► size check ──► RecordBatchReader
-                                                          │
-                                                          ▼
-                                          PyIceberg Catalog.{load,create}_table
-                                                          │
-                                                          ▼
-                                                   table.append(reader)
+IcebergWriter._scan ──► engine.register(alias)  (or "(sql)" subquery)
+        │
+        ▼
+CREATE SCHEMA IF NOT EXISTS ─► DESCRIBE target ─► CREATE TABLE ... PARTITIONED BY ... WITH (...)
+                                              └─► ALTER TABLE ADD COLUMN / ALTER COLUMN TYPE / SET PARTITIONED BY
+        │
+        ├── append:    INSERT INTO <cat>.<ns>.<tbl> BY NAME SELECT * FROM src
+        └── overwrite: CREATE TEMP TABLE stage AS src
+                       BEGIN; DELETE ... WHERE partition keys ∈ stage; INSERT ...; COMMIT
 ```
 
 ### File-register path
@@ -144,12 +148,17 @@ The view is lazy; data is read on demand when a query touches the alias.
 
 - **Unit tests** — pure-Python feature tests, no network. Mock catalog +
   S3 with `moto`.
+- **Pipeline tests** — a real `Lakehouse` against an in-process Iceberg
+  REST catalog (`tests/_fixtures/rest_catalog.py`, PyIceberg `SqlCatalog`
+  over SQLite + local files). DuckDB attaches it with the production
+  `RestCatalogBackend` SQL; tests read writes back through the
+  `SqlCatalog`.
 - **Property tests** — Hypothesis. Mark with `@pytest.mark.property`.
-  Targets: format detection, option rendering, batch chunking invariants,
-  streaming threshold decisions.
+  Targets: format detection, option rendering, partition-transform
+  parsing (`io/ddl.py`), round-trip invariants.
 - **Memory tests** — `pytest-memray`. Mark with `@pytest.mark.memory`.
-  Targets: `IcebergWriter` streaming path, `QueryResult.batches`, anything
-  on a hot loop. The FinOps moat depends on bounded memory.
+  Targets: `IcebergWriter` under a tight `memory_limit`,
+  `QueryResult.batches`, anything on a hot loop. The FinOps moat depends on bounded memory.
 - **Integration tests** — `@pytest.mark.integration`, opt-in. Run against
   moto-backed Glue + S3, never real AWS in CI.
 

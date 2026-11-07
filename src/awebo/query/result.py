@@ -3,13 +3,14 @@
 ``Lakehouse.sql()`` returns a :class:`QueryResult` rather than executing
 eagerly into a particular dataframe. The user picks the materialisation:
 
-* ``.to_polars()`` -> :class:`polars.DataFrame`
+* ``.to_polars()`` -> :class:`polars.DataFrame` (DuckDB's native Polars export)
 * ``.to_arrow()``  -> :class:`pyarrow.Table`
 * ``.show()``      -> prints a formatted preview
 * ``.batches()``   -> streaming :class:`pyarrow.RecordBatchReader`
 
-Calling any conversion method materialises the relation; calling ``batches``
-keeps things streaming so larger-than-memory results don't blow up.
+DuckDB 2.0 relations are SQL text: every conversion re-runs the query.
+Calling ``batches`` keeps things streaming so larger-than-memory results
+don't blow up.
 """
 
 from __future__ import annotations
@@ -21,6 +22,9 @@ if TYPE_CHECKING:
     import polars as pl
     import pyarrow as pa
 
+DEFAULT_BATCH_SIZE = 131_072
+"""DuckDB 2.0's own default Arrow batch size."""
+
 
 class QueryResult:
     """Wraps a DuckDB relation with ergonomic materialisation methods."""
@@ -29,22 +33,20 @@ class QueryResult:
         self._relation = relation
 
     def to_polars(self) -> pl.DataFrame:
-        import polars as pl
-
-        df = pl.from_arrow(self._relation.to_arrow_table())
-        if isinstance(df, pl.Series):
-            return df.to_frame()
-        return df
+        frame: pl.DataFrame = self._relation.pl()
+        return frame
 
     def to_arrow(self) -> pa.Table:
-        return self._relation.to_arrow_table()
+        table: pa.Table = self._relation.to_arrow_table()
+        return table
 
-    def batches(self, batch_size: int = 100_000) -> pa.RecordBatchReader:
+    def batches(self, batch_size: int = DEFAULT_BATCH_SIZE) -> pa.RecordBatchReader:
         """Stream results as Arrow record batches without full materialisation."""
-        return self._relation.to_arrow_reader(batch_size=batch_size)
+        reader: pa.RecordBatchReader = self._relation.to_arrow_reader(batch_size=batch_size)
+        return reader
 
     def show(self, limit: int = 20) -> None:
         self._relation.limit(limit).show()
 
     def __repr__(self) -> str:
-        return f"<QueryResult relation={self._relation!r}>"
+        return f"<QueryResult sql={self._relation.sql_query()!r}>"

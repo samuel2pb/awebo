@@ -178,19 +178,16 @@ def test_pipeline_chained_bronze_silver_gold(lake: Lakehouse, sample_parquet: Pa
     assert all(v > 50.0 for v in _column_floats(out, "total"))
 
 
-# ------------------------------------------------------------ streaming path
+# ------------------------------------------------------------ bounded memory
 
 
-def test_pipeline_polars_write_uses_streaming_path(
-    streaming_lake: Lakehouse, big_polars_df: pl.DataFrame
+def test_pipeline_polars_write_under_memory_limit(
+    spill_lake: Lakehouse, big_polars_df: pl.DataFrame
 ) -> None:
-    """With streaming_threshold_mb=0 every Polars write must traverse the
-    streaming path (RecordBatchReader-based). End-to-end correctness is the
-    contract, not the path itself — but row count + column count must match.
-    """
-    streaming_lake.to_lake(big_polars_df, database="bulk", table="rows")
+    """A Polars write under a tight DuckDB memory limit lands every row."""
+    spill_lake.to_lake(big_polars_df, database="bulk", table="rows")
 
-    out = _read_back(streaming_lake, "bulk", "rows")
+    out = _read_back(spill_lake, "bulk", "rows")
     assert out.num_rows == big_polars_df.height
     assert set(out.column_names) == {"id", "bucket", "amount"}
 

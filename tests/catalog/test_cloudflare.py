@@ -53,13 +53,34 @@ def test_duckdb_secret_has_r2_endpoint() -> None:
     assert "USE_SSL TRUE" in secret
     assert "KEY_ID 'r2key'" in secret
     assert "SECRET 'r2secret'" in secret
-    assert spec.attach is None
+
+
+def test_r2_catalog_attaches_with_token_secret() -> None:
+    """DuckDB attaches the R2 Data Catalog, authenticated by the API token."""
+    catalog = CatalogSettings(type="cloudflare", name="lake")
+    cf = CloudflareSettings(
+        account_id="abc123",
+        r2_access_key_id="r2key",
+        r2_secret_access_key="r2secret",
+        bucket="my-lake",
+        api_token="cf-token",
+    )
+    spec = CloudflareCatalogBackend(catalog, cf).duckdb_attach_sql(_r2_creds())
+    assert any("TYPE iceberg, TOKEN 'cf-token'" in s for s in spec.secrets)
+    assert spec.attach is not None
+    assert spec.attach.startswith("ATTACH 'abc123_my-lake' AS \"lake\"")
+    assert "URI 'https://catalog.cloudflarestorage.com/abc123/my-lake'" in spec.attach
+    assert 'SECRET "awebo_lake_iceberg"' in spec.attach
 
 
 def test_duckdb_secret_no_path_style() -> None:
     backend = _cf_backend()
     spec = backend.duckdb_attach_sql(_r2_creds())
     assert "URL_STYLE" not in spec.secrets[0]
+
+
+def test_r2_catalog_assigns_table_locations() -> None:
+    assert _cf_backend().table_location("ns", "t") is None
 
 
 def test_eu_jurisdiction_endpoint() -> None:

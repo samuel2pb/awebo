@@ -34,9 +34,9 @@ def lake(tmp_path: Path) -> Iterator[Lakehouse]:
 
 
 @pytest.fixture
-def streaming_lake(tmp_path: Path) -> Iterator[Lakehouse]:
-    """Lakehouse with a tiny streaming threshold to force chunked writes."""
-    instance = make_test_lakehouse(tmp_path, streaming_threshold_mb=0)
+def spill_lake(tmp_path: Path) -> Iterator[Lakehouse]:
+    """Lakehouse with a small DuckDB ``memory_limit`` so writes spill to disk."""
+    instance = make_test_lakehouse(tmp_path, memory_limit="256MB")
     try:
         yield instance
     finally:
@@ -69,7 +69,7 @@ def sample_csv(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def big_polars_df() -> pl.DataFrame:
-    """A DataFrame guaranteed to exceed ``streaming_threshold_mb=0``."""
+    """A DataFrame large enough to span several DuckDB vectors and row groups."""
     n = 50_000
     return pl.DataFrame(
         {

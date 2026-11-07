@@ -99,8 +99,8 @@ outgrow the free tiers and want the Fargate/S3/Glue substrate.
 
 1. **S3 request fees dominate.** Every Iceberg commit writes data files,
    manifests, a manifest list and a metadata JSON. Batch your writes
-   (one `to_lake` per table per run, not one per chunk) and let awebo's
-   streaming writer size the Parquet files. Fewer, larger files also make
+   (one `to_lake` per table per run, not one per chunk) and let DuckDB
+   size the Parquet files (`write.target-file-size-bytes`). Fewer, larger files also make
    reads cheaper.
 2. **Logs are the sneaky second line.** 20 MB/run × 24 runs is 14 GB/month.
    Keep `logging` at `INFO`, keep tundra's `log_retention_days` short
@@ -108,9 +108,9 @@ outgrow the free tiers and want the Fargate/S3/Glue substrate.
 3. **Spot is the default and it is fine for batch.** A reclaimed task
    retries on the next schedule; Iceberg commits are atomic, so a
    half-finished run leaves no partial data.
-4. **Right-size the task.** awebo streams payloads above
-   `AWEBO_STREAMING_THRESHOLD_MB` (default 512), so 1 GB of RAM handles
-   multi-GB inputs. Start at 0.5 vCPU / 1 GB and only go up when
+4. **Right-size the task.** DuckDB streams sources and spills to disk
+   above `AWEBO_DUCKDB_MEMORY_LIMIT`, so 1 GB of RAM handles multi-GB
+   inputs. Start at 0.5 vCPU / 1 GB and only go up when
    `AWEBO_TRACE_MEMORY=1` shows you need it.
 5. **The public IP is cheaper than a NAT gateway.** A NAT gateway is
    $0.045/hour *plus* $0.045/GB — $32/month before traffic. Five minutes

@@ -34,15 +34,16 @@ default exclusions in `make test`).
 
 ## High-level architecture
 
-`awebo` is a thin facade (`src/awebo/lakehouse.py:Lakehouse`) over four
-cooperating engines, deliberately split:
+`awebo` is a thin facade (`src/awebo/lakehouse.py:Lakehouse`) over DuckDB
+(>= 2.0) and its native Iceberg read + write support:
 
 | Concern | Engine | Purpose |
 | --- | --- | --- |
 | Read SQL | DuckDB + `iceberg` extension | Vectorised SELECT over Iceberg tables and external files |
-| Write / DDL | PyIceberg | Table create, namespace create, schema evolution, append commits |
-| Data plane | Apache Arrow | Zero-copy bridge between DuckDB ↔ PyIceberg, streaming batches |
+| Write / DDL | DuckDB + `iceberg` extension | CREATE/ALTER TABLE, INSERT, DELETE against the attached catalog |
+| Data plane | Apache Arrow | Zero-copy scans of Arrow / Polars sources registered with DuckDB |
 | User-facing dataframe | Polars | Returned by `QueryResult.to_polars()` |
+| Escape hatch only | PyIceberg | `Lakehouse.pyiceberg_catalog()`; awebo never writes through it |
 
 The codebase is **package-by-feature** (not by layer):
 
@@ -54,8 +55,7 @@ src/awebo/
 ├── auth/            # AuthProvider ABC + AwsAuthProvider
 ├── catalog/         # CatalogBackend ABC + GlueCatalogBackend
 ├── query/           # DuckDB QueryEngine + lazy QueryResult
-├── io/              # FileReader (autodetect format) + IcebergWriter (auto-stream)
-├── streaming/       # Arrow batch helpers shared by reader+writer
+├── io/              # FileReader (autodetect format) + IcebergWriter (DuckDB DML) + ddl.py
 ├── lineage/         # LineageEmitter protocol + Http/S3/Composite/Noop emitters
 └── quality/         # QualityRunner protocol + DuckDBSQLRunner
 ```
@@ -68,25 +68,28 @@ src/awebo/
    needs the same data twice, fetch once and pass it down. Anywhere you see
    a loop calling an external API, treat it as a bug. Examples already in
    place: `AuthProvider.resolve()` caches credentials; catalog ATTACH is
-   one batched list of statements; PyIceberg + DuckDB share the same
-   `Credentials` struct.
+   one batched list of statements; DuckDB secrets and the PyIceberg escape
+   hatch share the same `Credentials` struct.
 
 2. **Single DuckDB connection per `Lakehouse`.** Lives in `QueryEngine`,
    closed on `Lakehouse.close()` / context-manager exit.
 
-3. **Reads → DuckDB. Writes → PyIceberg.** Both share Arrow batches as the
-   data plane. Do not write through DuckDB; do not scan through PyIceberg.
+3. **Reads and writes → DuckDB.** The attached Iceberg catalog carries
+   both. Do not write or scan through PyIceberg; it is only the
+   `pyiceberg_catalog()` escape hatch. Quote every SQL value with
+   `awebo._sql.quote_ident` / `quote_literal`.
 
-4. **Auto-streaming write path.** `IcebergWriter` measures payload via
-   `estimate_size_mb`; above `streaming_threshold_mb` (default 512MB,
-   `AWEBO_STREAMING_THRESHOLD_MB`), it switches to a `RecordBatchReader`.
-   SQL writes are *always* streamed (never materialised).
+4. **DuckDB bounds memory.** Register sources with `QueryEngine.register`
+   (zero-copy; readers and LazyFrames pulled on demand) — never
+   materialise in Python. Memory is capped by `memory_limit`
+   (`AWEBO_DUCKDB_MEMORY_LIMIT`) with spill to `temp_dir`. Overwrite is one
+   `QueryEngine.transaction()` (one atomic catalog commit).
 
 5. **Config is read once.** Only `config.py` touches `os.environ`. Rest of
    the library receives a frozen `LakehouseConfig` dataclass.
 
-6. **DuckDB extensions** (`iceberg`, `httpfs`) must be pre-installed in the
-   runtime image. The engine `LOAD`s them; it deliberately does not
+6. **DuckDB extensions** (`iceberg` + its `avro` dependency, `httpfs`) must
+   be pre-installed in the runtime image. The engine `LOAD`s them; it deliberately does not
    `INSTALL` them on hot path.
 
 ## Testing requirements
@@ -95,13 +98,14 @@ src/awebo/
   invariants (format detection, batch chunking, idempotent ingest). Mark
   with `@pytest.mark.property`. Run via `make test-prop`.
 - **Memory tests (pytest-memray)** — required for any code in a hot loop
-  (writer, reader, streaming). Mark with `@pytest.mark.memory`. Track
+  (writer, reader). Mark with `@pytest.mark.memory`. Track
   allocations, not wall time. Run before merging anything touching a hot
   loop: `make test-mem`.
 - **Pipeline tests (`tests/pipelines/`)** — end-to-end dataflow tests that
-  wire a real :class:`Lakehouse` against a local SQLite-backed
-  :class:`LocalIcebergCatalogBackend` (under `tests/_fixtures/`). Use the
-  `lake` / `streaming_lake` fixtures from `tests/pipelines/conftest.py`;
+  wire a real :class:`Lakehouse` against :class:`LocalIcebergCatalogBackend`
+  (under `tests/_fixtures/`): an in-process Iceberg REST catalog over
+  PyIceberg's SQLite `SqlCatalog`, attached by DuckDB like production. Use the
+  `lake` / `spill_lake` fixtures from `tests/pipelines/conftest.py`;
   verify writes by re-loading via PyIceberg with the `_read_back` helper
   pattern. Add a new pipeline test for any new public verb on
   :class:`Lakehouse`.
@@ -116,7 +120,8 @@ src/awebo/
 | Add a new cloud's credentials | `src/awebo/auth/<cloud>.py` + register in `Lakehouse._build_auth` |
 | Add a new catalog backend (REST, Hive, Nessie) | `src/awebo/catalog/<name>.py` + register in `Lakehouse._build_catalog` |
 | Change the public surface | `src/awebo/lakehouse.py` and re-export in `src/awebo/__init__.py` |
-| Tune streaming threshold or batch size | `src/awebo/streaming/batches.py` and `src/awebo/config.py` |
+| Tune DuckDB memory / spill | `src/awebo/config.py` and `src/awebo/query/engine.py` |
+| Change how writes map to SQL | `src/awebo/io/writer.py` (+ `src/awebo/io/ddl.py`) |
 | Add a new file format auto-detection | `src/awebo/io/reader.py` (`_EXT_TO_FUNC` table) |
 | Change DuckDB configuration | `src/awebo/query/engine.py` |
 | Add a lineage emitter backend | `src/awebo/lineage/<name>.py` + register in `factory.create_emitter` |

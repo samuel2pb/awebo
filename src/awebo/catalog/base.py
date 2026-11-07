@@ -1,30 +1,24 @@
 """Abstract catalog contract.
 
-A catalog backend is the bridge between the user-facing Lakehouse and the two
-engines awebo orchestrates:
+A catalog backend tells DuckDB how to reach one Iceberg catalog. Since
+DuckDB 2.0 the iceberg extension reads *and* writes through an attached
+catalog, so :meth:`CatalogBackend.duckdb_attach_sql` is the whole data path.
 
-* **PyIceberg** for writes, table/namespace creation, schema evolution.
-* **DuckDB iceberg extension** for reads via SQL.
-
-Both engines need slightly different views of the same connection details, so
-the backend exposes them as two methods rather than leaking implementation.
+:meth:`CatalogBackend.pyiceberg` remains as the escape hatch behind
+``Lakehouse.pyiceberg_catalog()`` (snapshot expiry, manifest inspection and
+other maintenance that has no SQL verb). awebo itself never calls it.
 """
 
 from __future__ import annotations
 
-import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
-
-from awebo.exceptions import CatalogError
 
 if TYPE_CHECKING:
     from pyiceberg.catalog import Catalog as PyIcebergCatalog
 
     from awebo.auth.base import Credentials
-
-log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,7 +41,7 @@ class CatalogBackend(ABC):
 
     @abstractmethod
     def pyiceberg(self, credentials: Credentials) -> PyIcebergCatalog:
-        """Return a connected PyIceberg catalog for write/DDL ops.
+        """Return a connected PyIceberg catalog (escape hatch only).
 
         Implementations MUST cache the resulting handle so repeated calls in
         a single Lakehouse session reuse the same connection.
@@ -57,19 +51,16 @@ class CatalogBackend(ABC):
     def duckdb_attach_sql(self, credentials: Credentials) -> AttachSpec:
         """Return DuckDB secret + attach statements for catalog setup.
 
-        ``secrets`` are executed first (CREATE SECRET), then ``attach``
-        (ATTACH ... TYPE iceberg). REST backends return ``attach=None``
-        because DuckDB iceberg 1.5.x does not support REST ATTACH.
+        ``secrets`` are executed first (``CREATE SECRET``), then ``attach``
+        (``ATTACH ... (TYPE iceberg, ...)``). The attached catalog carries
+        both reads and writes.
         """
 
-    def ensure_namespace(self, credentials: Credentials, namespace: str) -> None:
-        """Create the namespace (database) if it does not exist."""
-        catalog = self.pyiceberg(credentials)
-        existing = {".".join(ns) for ns in catalog.list_namespaces()}
-        if namespace in existing:
-            return
-        log.debug("creating namespace %r", namespace)
-        try:
-            catalog.create_namespace(namespace)
-        except Exception as exc:
-            raise CatalogError(f"failed to create namespace {namespace!r}: {exc}") from exc
+    def table_location(self, namespace: str, table: str) -> str | None:
+        """Return the storage location for a new table, or ``None``.
+
+        ``None`` lets the catalog pick the location (REST catalogs do).
+        Catalogs that cannot (Glue without S3 Tables federation) override it.
+        """
+        del namespace, table
+        return None
