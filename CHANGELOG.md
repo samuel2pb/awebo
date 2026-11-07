@@ -52,6 +52,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Dependency refresh (`uv lock --upgrade`)**: clears all 78 Dependabot
+  alerts on transitive packages (aiohttp, anyio, certifi, cryptography,
+  filelock, fsspec, idna, multidict, oauthlib, opentelemetry-api, pyasn1,
+  urllib3, virtualenv, Werkzeug). PyIceberg moves to 0.12, which no longer
+  pulls `pyiceberg-core` by default, so the `pyiceberg-core` extra is now a
+  declared dependency (partition transforms need it). DuckDB is bounded to
+  `<2` for now: the 2.0 type stubs return `Any` from the Arrow conversions
+  and need a typing pass before upgrading. `ruff` stays at 0.15.12 to match
+  the pre-commit hook.
+
 - **Quality module internals refactored for depth and testability:**
   - `_require_threshold()` now returns validated `CheckThreshold` instead
     of `None`, eliminating 7 `assert` statements used for type narrowing.
