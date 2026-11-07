@@ -71,6 +71,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **CI workflow** (`.github/workflows/ci.yml`): `make check`, unit +
+  pipeline, property, memory and moto integration tests on every PR and
+  push to `main`. Read-only token, no secrets, so fork PRs run it safely.
 - `Lakehouse.to_lake(..., properties={...})`: Iceberg table properties, set
   on create (`WITH (...)`) and synced onto existing tables
   (`set_iceberg_table_properties`).
