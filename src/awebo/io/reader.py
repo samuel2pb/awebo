@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from awebo._sql import quote_ident, quote_literal
 from awebo.exceptions import QueryError
 
 if TYPE_CHECKING:
@@ -25,12 +26,11 @@ type ReaderOptions = dict[str, ReaderOptionValue]
 _EXT_TO_FUNC: dict[str, str] = {
     ".parquet": "read_parquet",
     ".pq": "read_parquet",
-    ".csv": "read_csv_auto",
-    ".tsv": "read_csv_auto",
-    ".json": "read_json_auto",
-    ".ndjson": "read_json_auto",
-    ".jsonl": "read_json_auto",
-    ".arrow": "read_parquet",  # arrow IPC handled separately if needed
+    ".csv": "read_csv",
+    ".tsv": "read_csv",
+    ".json": "read_json",
+    ".ndjson": "read_json",
+    ".jsonl": "read_json",
 }
 
 log = logging.getLogger(__name__)
@@ -60,7 +60,10 @@ class FileReader:
         if options:
             parts = [f"{k}={_render_option(v)}" for k, v in options.items()]
             opts_sql = ", " + ", ".join(parts)
-        sql = f"CREATE OR REPLACE VIEW {alias} AS SELECT * FROM {func}('{path}'{opts_sql});"
+        sql = (
+            f"CREATE OR REPLACE VIEW {quote_ident(alias)} AS "
+            f"SELECT * FROM {func}({quote_literal(path)}{opts_sql});"
+        )
         self._engine.execute(sql)
 
 
@@ -70,7 +73,6 @@ def _render_option(value: ReaderOptionValue) -> str:
     if isinstance(value, (int, float)):
         return str(value)
     if isinstance(value, str):
-        escaped = value.replace("'", "''")
-        return f"'{escaped}'"
+        return quote_literal(value)
     # Sequence of scalars
     return "[" + ", ".join(_render_option(v) for v in value) + "]"

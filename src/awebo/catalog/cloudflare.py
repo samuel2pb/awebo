@@ -1,7 +1,9 @@
 """Cloudflare R2 Iceberg catalog backend.
 
 Derives S3 endpoint and REST catalog URI from a Cloudflare account ID,
-then delegates all PyIceberg and DuckDB operations to
+then delegates to :class:`~awebo.catalog.rest.RestCatalogBackend`: DuckDB
+attaches the R2 Data Catalog with a ``TYPE iceberg`` token secret, so
+catalog-qualified reads and writes both work. All operations go through
 :class:`~awebo.catalog.rest.RestCatalogBackend`.
 """
 
@@ -64,3 +66,6 @@ class CloudflareCatalogBackend(CatalogBackend):
 
     def duckdb_attach_sql(self, credentials: Credentials) -> AttachSpec:
         return self._inner.duckdb_attach_sql(credentials)
+
+    def table_location(self, namespace: str, table: str) -> str | None:
+        return self._inner.table_location(namespace, table)

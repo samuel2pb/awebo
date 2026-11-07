@@ -19,13 +19,13 @@ COPY src ./src
 # Production install, no dev extras, into /app/.venv.
 RUN uv sync --frozen --no-dev --no-editable --extra runner
 
-# Pre-install DuckDB iceberg + httpfs extensions so the runtime never hits
-# the network on cold start (CLAUDE.md invariant #6).
+# Pre-install DuckDB extensions so the runtime never hits the network on cold
+# start (CLAUDE.md invariant #6). DuckDB 2.0's iceberg depends on avro.
 RUN /app/.venv/bin/python - <<'PY'
 import duckdb
 con = duckdb.connect(":memory:")
-con.install_extension("iceberg")
-con.install_extension("httpfs")
+for ext in ("httpfs", "avro", "iceberg"):
+    con.install_extension(ext)
 con.close()
 PY
 

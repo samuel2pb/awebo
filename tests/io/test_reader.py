@@ -13,10 +13,10 @@ from awebo.io.reader import FileReader
     [
         ("foo.parquet", "read_parquet"),
         ("FOO.PARQUET", "read_parquet"),
-        ("data.csv", "read_csv_auto"),
-        ("data.tsv", "read_csv_auto"),
-        ("events.json", "read_json_auto"),
-        ("events.ndjson", "read_json_auto"),
+        ("data.csv", "read_csv"),
+        ("data.tsv", "read_csv"),
+        ("events.json", "read_json"),
+        ("events.ndjson", "read_json"),
         ("s3://bucket/path/file.parquet?versionId=abc", "read_parquet"),
     ],
 )
@@ -38,4 +38,4 @@ def test_detect_format_unknown_extension_raises() -> None:
 )
 def test_detect_format_invariant_known_suffix_never_raises(suffix: str, stem: str) -> None:
     func = FileReader.detect_format(f"{stem}{suffix}")
-    assert func in {"read_parquet", "read_csv_auto", "read_json_auto"}
+    assert func in {"read_parquet", "read_csv", "read_json"}

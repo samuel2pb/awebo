@@ -53,12 +53,12 @@ S3-compatible object store (used by the REST catalog backend; all optional)
 
 Tunables
 ~~~~~~~~
-``AWEBO_STREAMING_THRESHOLD_MB`` (default ``512``)
-    When a write source exceeds this in-memory size, awebo switches to
-    streaming Arrow ``RecordBatchReader`` writes that spill to disk via
-    DuckDB's temp directory rather than materialising into memory.
+``AWEBO_DUCKDB_MEMORY_LIMIT``
+    DuckDB ``memory_limit`` (e.g. ``2GB``). Reads and writes both run inside
+    DuckDB, which spills to ``AWEBO_TEMP_DIR`` above this limit. Defaults to
+    DuckDB's own default (80% of RAM).
 ``AWEBO_TEMP_DIR``
-    Directory used by DuckDB for spill files. Defaults to system temp.
+    Directory used by DuckDB for spill files (``temp_directory``).
 """
 
 from __future__ import annotations
@@ -68,8 +68,6 @@ from dataclasses import dataclass, field
 from typing import Final
 
 from awebo.exceptions import ConfigError
-
-DEFAULT_STREAMING_THRESHOLD_MB: Final[int] = 512
 
 _TRUTHY: Final[frozenset[str]] = frozenset({"1", "true", "yes", "on"})
 
@@ -144,9 +142,9 @@ class LakehouseConfig:
     s3: S3Settings | None = None
     rest: RestSettings | None = None
     cloudflare: CloudflareSettings | None = None
-    streaming_threshold_mb: int = DEFAULT_STREAMING_THRESHOLD_MB
     lineage: LineageSettings = field(default_factory=LineageSettings)
     temp_dir: str | None = None
+    memory_limit: str | None = None
     trace_memory: bool = False
 
 
@@ -245,11 +243,6 @@ def load_config() -> LakehouseConfig:
             " supported: 'glue', 'rest', 'cloudflare'"
         )
 
-    streaming_mb_raw = os.getenv("AWEBO_STREAMING_THRESHOLD_MB")
-    streaming_mb = int(streaming_mb_raw) if streaming_mb_raw else DEFAULT_STREAMING_THRESHOLD_MB
-    if streaming_mb <= 0:
-        raise ConfigError("AWEBO_STREAMING_THRESHOLD_MB must be positive")
-
     lineage = LineageSettings(
         enabled=_bool("AWEBO_LINEAGE_ENABLED"),
         url=os.getenv("AWEBO_LINEAGE_URL"),
@@ -271,7 +264,7 @@ def load_config() -> LakehouseConfig:
         rest=rest,
         cloudflare=cloudflare,
         lineage=lineage,
-        streaming_threshold_mb=streaming_mb,
         temp_dir=os.getenv("AWEBO_TEMP_DIR"),
+        memory_limit=os.getenv("AWEBO_DUCKDB_MEMORY_LIMIT"),
         trace_memory=_bool("AWEBO_TRACE_MEMORY"),
     )

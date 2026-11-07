@@ -1,10 +1,11 @@
 """User-facing Lakehouse facade.
 
 This module is intentionally thin. All real work lives in the feature
-packages (``catalog``, ``auth``, ``query``, ``io``, ``streaming``); the
-:class:`Lakehouse` is just the wiring that loads config once, resolves
-credentials once, attaches the catalog to DuckDB once, and exposes the
-ergonomic verbs ``sql``, ``read_file``, ``to_lake``.
+packages (``catalog``, ``auth``, ``query``, ``io``); the :class:`Lakehouse`
+is just the wiring that loads config once, resolves credentials once,
+attaches the catalog to DuckDB once, and exposes the ergonomic verbs
+``sql``, ``read_file``, ``to_lake``. DuckDB (>= 2.0) runs both reads and
+writes against the attached Iceberg catalog.
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ from awebo.query.engine import QueryEngine
 from awebo.query.result import QueryResult
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
     from types import TracebackType
 
     from pyiceberg.catalog import Catalog as PyIcebergCatalog
@@ -102,14 +104,17 @@ class Lakehouse:
         callers that already manage their own backends (e.g. a long-running
         server reusing one ``CatalogBackend`` across many lakehouses). When
         injected, they bypass the env-var-driven build, but ``config`` is
-        still honoured for streaming / temp-dir tunables.
+        still honoured for the DuckDB memory / temp-dir tunables.
         """
         self._config = config or load_config()
         self._auth: AuthProvider = auth or self._build_auth(self._config)
         self._credentials: Credentials = self._auth.resolve()
         self._catalog: CatalogBackend = catalog or self._build_catalog(self._config)
 
-        self._engine = QueryEngine(temp_dir=self._config.temp_dir)
+        self._engine = QueryEngine(
+            temp_dir=self._config.temp_dir,
+            memory_limit=self._config.memory_limit,
+        )
         self._engine.attach_catalog(self._catalog, self._credentials)
 
         if emitter is None:
@@ -122,8 +127,6 @@ class Lakehouse:
         self._writer = IcebergWriter(
             engine=self._engine,
             catalog=self._catalog,
-            credentials=self._credentials,
-            streaming_threshold_mb=self._config.streaming_threshold_mb,
             emitter=self._emitter,
             lineage_namespace=self._config.lineage.namespace,
         )
@@ -133,21 +136,22 @@ class Lakehouse:
 
             start_memory_tracing()
         log.info(
-            "lakehouse ready: catalog=%s name=%s threshold=%dMB",
+            "lakehouse ready: catalog=%s name=%s",
             self._config.catalog.type,
             self._config.catalog.name,
-            self._config.streaming_threshold_mb,
         )
 
     # ---------------------------------------------------------------- public
     def sql(self, query: str) -> QueryResult:
         """Execute a SQL query against DuckDB and return a lazy result.
 
-        Catalog-qualified queries (``select ... from <name>.<ns>.<tbl>``) work
-        on Glue. They do **not** work on REST today: the DuckDB iceberg
-        extension (1.5.x) does not yet implement REST ATTACH, so awebo skips
-        ATTACH for REST and you must read REST-backed tables via
-        ``iceberg_scan('s3://...')`` or :meth:`pyiceberg_catalog`.
+        The catalog is attached under its configured name on every backend
+        (Glue, REST, Cloudflare R2), so catalog-qualified SQL works
+        everywhere: ``select ... from <name>.<ns>.<tbl>``. DuckDB's native
+        Iceberg features apply, e.g. time travel with
+        ``... AT (VERSION => <snapshot_id>)`` or ``AT (TIMESTAMP => ...)``,
+        and ``iceberg_snapshots('<name>.<ns>.<tbl>')`` for history.
+        Statements (DDL / DML) run immediately.
         """
         from awebo._observability import otel_span
 
@@ -177,33 +181,37 @@ class Lakehouse:
         schema: PyIcebergSchema | None = None,
         partition_spec: PyIcebergPartitionSpec | None = None,
         schema_evolution: bool = True,
+        properties: Mapping[str, str] | None = None,
     ) -> None:
         """Write ``data`` to an Iceberg table, creating it if missing.
 
-        ``data`` may be a Polars DataFrame, a PyArrow Table / RecordBatchReader,
-        or a SQL string (which is executed and its result streamed straight
-        to the table).
+        ``data`` may be a Polars DataFrame / LazyFrame, a PyArrow Table /
+        RecordBatchReader, or a SQL string. DuckDB scans the source and
+        writes the Iceberg data files and commit itself; memory is bounded by
+        DuckDB's ``memory_limit`` with spill to ``temp_dir``.
 
         ``mode`` selects the write semantics:
 
         * ``"append"`` (default) — add rows to the table.
-        * ``"overwrite"`` — replace table contents. When the target table is
-          partitioned with identity transforms, only the partitions present
-          in the incoming data are replaced (*dynamic partition overwrite*).
-          Unpartitioned tables get a full replacement. In-memory sources use
-          ``dynamic_partition_overwrite`` directly. SQL strings use a
-          partition-scoped transactional path (``SELECT DISTINCT`` pre-query
-          + ``delete`` + chunked ``append``). ``RecordBatchReader`` (one-shot)
-          falls back to full replacement.
+        * ``"overwrite"`` — one transaction (one Iceberg snapshot) that
+          deletes, then inserts. On a partitioned table only the partitions
+          present in the incoming data are replaced (*dynamic partition
+          overwrite*, for every transform). An unpartitioned table is fully
+          replaced. An empty source never deletes anything.
 
         ``schema`` and ``partition_spec`` are honoured on table create.
         When the table already exists:
 
-        * ``schema_evolution`` (default ``True``) merges the incoming schema
-          into the table via ``union_by_name`` (adds new columns, widens
-          compatible types). Set to ``False`` to reject schema mismatches.
-        * ``partition_spec`` triggers partition evolution — fields are added
-          or removed to match the desired spec.
+        * ``schema_evolution`` (default ``True``) adds new columns and applies
+          lossless widenings (int -> long, float -> double, decimal
+          precision). Set to ``False`` to reject new columns.
+        * ``partition_spec`` triggers partition evolution
+          (``ALTER TABLE ... SET PARTITIONED BY``) when it differs from the
+          current spec.
+
+        ``properties`` are Iceberg table properties (e.g.
+        ``{"write.parquet.compression-codec": "zstd"}``): set on create and
+        synced onto existing tables when they differ.
         """
         from awebo._observability import otel_span
 
@@ -216,34 +224,41 @@ class Lakehouse:
                 schema=schema,
                 partition_spec=partition_spec,
                 schema_evolution=schema_evolution,
+                properties=properties,
             )
 
     def pyiceberg_catalog(self) -> PyIcebergCatalog:
         """Return the underlying PyIceberg :class:`Catalog`.
 
-        Escape hatch for advanced operations (manifest tables, snapshot
-        management, schema introspection) that don't map onto
-        ``sql`` / ``read_file`` / ``to_lake``. Most users should not need this.
+        Escape hatch for maintenance that has no SQL verb yet (snapshot
+        expiry, orphan-file cleanup, table registration). Most of what used to
+        need it now has a native DuckDB form via :meth:`sql`:
+        ``iceberg_snapshots``, ``iceberg_metadata``, ``iceberg_partition_specs``,
+        ``iceberg_table_properties``, ``CALL iceberg_rewrite_data_files``,
+        ``CALL iceberg_rollback_to_snapshot``, ``ALTER TABLE``, ``DROP TABLE``.
 
         Caveats:
 
-        * The handle is cached by the catalog backend; awebo reuses it
-          internally, so mutations through this handle bypass awebo's
-          streaming + write-error wrapping.
+        * The handle is created lazily and cached by the catalog backend.
+          Mutations through it bypass awebo's write-error wrapping and
+          lineage.
         * Holding a reference past :meth:`close` is undefined.
         """
         return self._catalog.pyiceberg(self._credentials)
 
     def health_check(self) -> dict[str, str]:
-        """Quick connectivity diagnostic for DuckDB and the catalog."""
+        """Quick connectivity diagnostic for DuckDB and the attached catalog."""
         status: dict[str, str] = {}
         try:
-            self._engine.execute("SELECT 1")
+            self._engine.fetch_rows("SELECT 1")
             status["duckdb"] = "ok"
         except Exception as exc:
             status["duckdb"] = f"error: {exc}"
         try:
-            self._catalog.pyiceberg(self._credentials).list_namespaces()
+            self._engine.fetch_rows(
+                "SELECT count(*) FROM duckdb_schemas() WHERE database_name = ?",
+                [self._catalog.name],
+            )
             status["catalog"] = "ok"
         except Exception as exc:
             status["catalog"] = f"error: {exc}"

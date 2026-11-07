@@ -6,6 +6,83 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed (breaking) — DuckDB 2.0 native Iceberg read + write
+
+- **DuckDB `>=2.0,<3`** (was `>=1.1,<2`). The 2.0 typing pass is done:
+  Arrow / Polars conversions are typed, `mypy --strict` is clean.
+- **Writes go through DuckDB, not PyIceberg.** `IcebergWriter` now issues
+  `CREATE SCHEMA IF NOT EXISTS`, `CREATE TABLE ... PARTITIONED BY ... WITH
+  (...)`, `INSERT INTO ... BY NAME`, `ALTER TABLE ADD COLUMN / ALTER COLUMN
+  TYPE / SET PARTITIONED BY` against the attached catalog. PyIceberg
+  `Schema` / `PartitionSpec` arguments are still accepted and translated to
+  DDL (`io/ddl.py`). Consequences:
+  - `overwrite` is one `DELETE` + `INSERT` transaction (one atomic catalog
+    commit, two snapshots) and is partition-scoped for **every** transform
+    (identity, year/month/day/hour, bucket, truncate) and every source,
+    including one-shot `RecordBatchReader`s (previously full replacement).
+    NULL partition values are matched too.
+  - DuckDB writes merge-on-read positional deletes; compact with
+    `CALL iceberg_rewrite_data_files(...)`.
+  - Partition field names are chosen by DuckDB (`identity_year_1`), not
+    taken from `PartitionField.name`. Partition evolution compares
+    (transform, source column), so tables created by PyIceberg are not
+    re-partitioned spuriously.
+  - Schema evolution: new columns added; lossless widenings only
+    (int → long, float → double, decimal precision).
+  - Lossy writes are rejected with `WriteError` ("incompatible column
+    types") instead of being cast silently: a `double` into a `long`
+    column, an integer into a `string` column, a `timestamp_ns` into a
+    `timestamp` column. Narrower integers, `float` → `double`, decimal
+    precision and all-NULL columns are still accepted. (PyIceberg rejected
+    these too.)
+  - Required (`NestedField(required=True)`) fields are created `NOT NULL`
+    and stay required in the Iceberg schema.
+  - Temporal partition overwrite (`year`/`month`/`day`/`hour`) on
+    `timestamptz` columns buckets by UTC, as Iceberg does, whatever the
+    session `TimeZone`. Before this fix a non-UTC host could delete rows
+    from the wrong day.
+- **REST and Cloudflare R2 catalogs are attached in DuckDB.**
+  `ATTACH '<warehouse>' (TYPE iceberg, URI ...)` with a `TYPE iceberg`
+  secret (`TOKEN`, or OAuth2 `CLIENT_ID` / `CLIENT_SECRET` from
+  `AWEBO_REST_CREDENTIAL`), or `AUTHORIZATION_TYPE 'none'`.
+  Catalog-qualified SQL (`select ... from lake.ns.tbl`) now works on every
+  backend; the `iceberg_scan('s3://...')` workaround is no longer needed.
+- **Glue in China regions** (`cn-*`) attaches via explicit
+  `URI 'glue.<region>.amazonaws.com.cn/iceberg'` + `AUTHORIZATION_TYPE
+  'sigv4'`; `ENDPOINT_TYPE 'glue'` builds the wrong host there. New Glue
+  tables are placed at `<warehouse>/<ns>.db/<table>` (PyIceberg's layout).
+- **Removed `AWEBO_STREAMING_THRESHOLD_MB`, `LakehouseConfig.streaming_threshold_mb`
+  and the `awebo.streaming` package.** DuckDB streams every source and
+  spills to disk, so there is no second path to choose. New
+  `AWEBO_DUCKDB_MEMORY_LIMIT` / `LakehouseConfig.memory_limit` sets
+  DuckDB's `memory_limit`.
+- **Removed `CatalogBackend.ensure_namespace`** (namespaces are created
+  with `CREATE SCHEMA IF NOT EXISTS`). Added `CatalogBackend.table_location`.
+  `IcebergWriter` no longer takes `credentials` / `streaming_threshold_mb`.
+- `FileReader` uses `read_csv` / `read_json` (the `*_auto` aliases are
+  legacy) and quotes paths and aliases. `.arrow` is no longer mapped to
+  `read_parquet` (it never could read Arrow IPC).
+- All secret / ATTACH values are SQL-quoted (`awebo/_sql.py`); a quote in a
+  credential no longer breaks the statement.
+- `QueryResult.to_polars()` uses DuckDB's native `.pl()`;
+  `QueryResult.batches()` defaults to DuckDB 2.0's 131 072-row batches.
+  Relations are lazy SQL in DuckDB 2.0: each conversion re-runs the query.
+- `health_check()` checks the catalog through DuckDB (`duckdb_schemas()`).
+
+### Added
+
+- `Lakehouse.to_lake(..., properties={...})`: Iceberg table properties, set
+  on create (`WITH (...)`) and synced onto existing tables
+  (`set_iceberg_table_properties`).
+- `pl.LazyFrame` is accepted as a write source (scanned on demand).
+- Native Iceberg SQL documented: time travel (`AT (VERSION => ...)`),
+  `iceberg_snapshots`, `iceberg_partition_specs`,
+  `iceberg_rollback_to_snapshot`, `iceberg_rewrite_data_files`.
+- Test fixture `tests/_fixtures/rest_catalog.py`: an in-process Iceberg
+  REST catalog (PyIceberg `SqlCatalog` over SQLite) so DuckDB writes are
+  tested hermetically, without Docker.
+- Dockerfile pre-installs DuckDB's `avro` extension (iceberg dependency).
+
 ### Added
 
 - **Public-repo hardening**: `publish-ghcr.yml` publishes the container
@@ -57,10 +134,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   filelock, fsspec, idna, multidict, oauthlib, opentelemetry-api, pyasn1,
   urllib3, virtualenv, Werkzeug). PyIceberg moves to 0.12, which no longer
   pulls `pyiceberg-core` by default, so the `pyiceberg-core` extra is now a
-  declared dependency (partition transforms need it). DuckDB is bounded to
-  `<2` for now: the 2.0 type stubs return `Any` from the Arrow conversions
-  and need a typing pass before upgrading. `ruff` stays at 0.15.12 to match
-  the pre-commit hook.
+  declared dependency (partition transforms need it). `ruff` stays at
+  0.15.12 to match the pre-commit hook.
 
 - **Quality module internals refactored for depth and testability:**
   - `_require_threshold()` now returns validated `CheckThreshold` instead

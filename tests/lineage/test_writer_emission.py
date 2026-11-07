@@ -44,8 +44,6 @@ def writer_env(tmp_path: Path) -> Iterator[tuple[IcebergWriter, SpyEmitter]]:
     writer = IcebergWriter(
         engine=engine,
         catalog=catalog,
-        credentials=credentials,
-        streaming_threshold_mb=1,
         emitter=spy,
         lineage_namespace="test-ns",
     )
@@ -120,8 +118,6 @@ def test_emission_failure_does_not_break_write(tmp_path: Path) -> None:
     writer = IcebergWriter(
         engine=engine,
         catalog=catalog,
-        credentials=credentials,
-        streaming_threshold_mb=1,
         emitter=BrokenEmitter(),
         lineage_namespace="test-ns",
     )

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from awebo.config import DEFAULT_STREAMING_THRESHOLD_MB, load_config
+from awebo.config import load_config
 from awebo.exceptions import ConfigError
 
 
@@ -25,7 +25,7 @@ def test_load_config_glue_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
     assert cfg.catalog.warehouse == "s3://b/wh"
     assert cfg.aws is not None
     assert cfg.aws.region == "eu-west-1"
-    assert cfg.streaming_threshold_mb == DEFAULT_STREAMING_THRESHOLD_MB
+    assert cfg.memory_limit is None
 
 
 @pytest.mark.usefixtures("clean_env")
@@ -150,10 +150,9 @@ def test_load_config_cloudflare_requires_account_id(monkeypatch: pytest.MonkeyPa
 
 
 @pytest.mark.usefixtures("clean_env")
-def test_load_config_rejects_negative_threshold(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_load_config_reads_duckdb_memory_limit(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("AWEBO_CATALOG_TYPE", "glue")
     monkeypatch.setenv("AWEBO_GLUE_WAREHOUSE", "s3://b/wh")
     monkeypatch.setenv("AWS_REGION", "eu-west-1")
-    monkeypatch.setenv("AWEBO_STREAMING_THRESHOLD_MB", "0")
-    with pytest.raises(ConfigError, match="positive"):
-        load_config()
+    monkeypatch.setenv("AWEBO_DUCKDB_MEMORY_LIMIT", "2GB")
+    assert load_config().memory_limit == "2GB"

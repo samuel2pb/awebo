@@ -4,7 +4,7 @@
 
 <p align="center">
   <em>DuckDB-powered Apache Iceberg data wrangler.</em><br/>
-  PyIceberg + Arrow on the back, DuckDB + Polars on the front.
+  DuckDB 2 reads and writes Iceberg; Arrow + Polars on the front.
 </p>
 
 <p align="center">
@@ -16,20 +16,22 @@
 ---
 
 `awebo` treats an Iceberg lakehouse as a single ergonomic Python object.
-Read with SQL, register external files, write back to Iceberg — with
-auto-streaming for larger-than-memory payloads and zero D+1 API patterns.
+Read with SQL, register external files, write back to Iceberg — all
+through one DuckDB connection, with bounded memory (DuckDB spills to disk)
+and zero D+1 API patterns.
 
 ## Why awebo
 
-- **One object, three engines.** DuckDB for fast vectorised reads, PyIceberg
-  for safe writes and DDL, Polars for the dataframe handoff. They share
-  Arrow batches as the data plane — no extra copies.
-- **Multi-cloud catalogs.** AWS Glue + S3, or any Iceberg REST catalog
-  (Tabular, Lakekeeper, Nessie, Polaris) including MinIO-backed local
-  stacks.
-- **Streaming by default.** Payloads above the threshold flip to a
-  `RecordBatchReader` automatically; SQL-driven writes are never
-  materialised in memory.
+- **One engine, end to end.** DuckDB 2's native Iceberg support runs reads
+  *and* writes (`CREATE TABLE`, `INSERT`, `DELETE`, `ALTER TABLE`) against
+  the attached catalog. Arrow and Polars are scanned zero-copy on the way
+  in; Polars is the dataframe handoff on the way out.
+- **Multi-cloud catalogs.** AWS Glue, Cloudflare R2 Data Catalog, or any
+  Iceberg REST catalog (Lakekeeper, Nessie, Polaris) including
+  MinIO-backed local stacks. Catalog-qualified SQL works on all of them.
+- **Bounded memory by default.** DuckDB pulls `RecordBatchReader` /
+  `LazyFrame` sources on demand and spills to disk above its
+  `memory_limit`; SQL-driven writes are never materialised in Python.
 - **Container-ready job runner.** Ship a `.py`, a directory, or a zipapp;
   resolve runtime deps from CLI flags, requirements files, or PEP 723
   inline metadata. Consumers don't need to publish their own image.
@@ -93,10 +95,11 @@ uv add "awebo[runner]"  # adds gcsfs for gs:// targets in the job runner
 uv add "awebo[otel]"    # adds opentelemetry-api for OTel span export
 ```
 
-The DuckDB `iceberg` and `httpfs` extensions are required at runtime. In
-dev DuckDB auto-loads them on first use; in production bake them into
-your image to avoid the cold-start download (the published container
-image already does this).
+awebo needs DuckDB >= 2.0. The DuckDB `iceberg` (plus its `avro`
+dependency) and `httpfs` extensions are required at runtime. In dev DuckDB
+auto-installs them on first use; in production bake them into your image
+to avoid the cold-start download (the published container image already
+does this).
 
 ## Configuration
 
@@ -104,7 +107,7 @@ image already does this).
 
 | Variable | Required | Description |
 | --- | --- | --- |
-| `AWEBO_CATALOG_TYPE` | yes | Catalog backend. Supported: `glue`, `rest`. |
+| `AWEBO_CATALOG_TYPE` | yes | Catalog backend. Supported: `glue`, `rest`, `cloudflare`. |
 | `AWEBO_CATALOG_NAME` | no (default `lake`) | DuckDB ATTACH alias used in SQL. |
 | `AWEBO_GLUE_WAREHOUSE` | yes (glue) | S3 warehouse URI for new tables. |
 | `AWS_REGION` / `AWS_DEFAULT_REGION` | yes (glue) | AWS region. |
@@ -118,8 +121,8 @@ image already does this).
 | `AWEBO_S3_PATH_STYLE` | no | `true` to force path-style addressing (MinIO). |
 | `AWEBO_S3_ACCESS_KEY_ID` / `AWEBO_S3_SECRET_ACCESS_KEY` | no | Object-store creds for non-AWS S3. |
 | `AWEBO_S3_REGION` | no | Region the S3 client should advertise. |
-| `AWEBO_STREAMING_THRESHOLD_MB` | no (default `512`) | Auto-stream when sources exceed this size. |
-| `AWEBO_TEMP_DIR` | no | DuckDB spill directory. |
+| `AWEBO_DUCKDB_MEMORY_LIMIT` | no | DuckDB `memory_limit` (e.g. `768MB`); DuckDB spills above it. |
+| `AWEBO_TEMP_DIR` | no | DuckDB spill directory (`temp_directory`). |
 | `AWEBO_TRACE_MEMORY` | no | `1` to enable `tracemalloc` peak memory reporting on writes. |
 
 Copy [`.env.example`](./.env.example) to `.env` and fill in the values
@@ -142,18 +145,41 @@ spec = PartitionSpec(
 )
 
 # Honoured on create; partition_spec triggers evolution if table already exists.
-lake.to_lake(arrow_table, "bronze", "events", schema=schema, partition_spec=spec)
+# `properties` become Iceberg table properties (set on create, synced after).
+lake.to_lake(
+    arrow_table, "bronze", "events",
+    schema=schema, partition_spec=spec,
+    properties={"write.parquet.compression-codec": "zstd"},
+)
 
-# Dynamic partition overwrite — only replaces partitions present in the data.
-# Unpartitioned tables get a full replacement. All source types accepted.
+# Dynamic partition overwrite — only replaces partitions present in the data,
+# for every transform (identity, year/month/day/hour, bucket, truncate).
+# Unpartitioned tables get a full replacement. One atomic catalog commit.
 lake.to_lake(snapshot, "bronze", "cadastro", mode="overwrite")
+```
+
+awebo translates `schema` / `partition_spec` into DuckDB DDL
+(`CREATE TABLE ... PARTITIONED BY (...)`). DuckDB names partition fields
+itself (e.g. `day_ingested_at_1`); the `name` on a `PartitionField` is not
+kept. DuckDB writes merge-on-read positional deletes, so frequent
+overwrites accumulate delete files; compact with
+`lake.sql("CALL iceberg_rewrite_data_files('lake.bronze.cadastro')")`.
+
+### Native Iceberg SQL
+
+```python
+lake.sql("SELECT * FROM lake.bronze.events AT (VERSION => 123456789)")   # time travel
+lake.sql("SELECT * FROM iceberg_snapshots('lake.bronze.events')")         # history
+lake.sql("SELECT * FROM iceberg_partition_specs('lake.bronze.events')")   # partitioning
+lake.sql("CALL iceberg_rollback_to_snapshot('lake.bronze.events', 123)") # rollback
 ```
 
 ### Schema evolution and type widening
 
 Schema evolution is enabled by default — `to_lake` automatically adds new
-columns and widens compatible types (e.g. `int32` → `int64`) via
-PyIceberg's `union_by_name`. To reject schema mismatches instead:
+columns (`ALTER TABLE ADD COLUMN`) and applies lossless widenings
+(`int32` → `int64`, `float` → `double`, decimal precision) with
+`ALTER COLUMN TYPE`. To reject new columns instead:
 
 ```python
 lake.to_lake(df, "bronze", "events", schema_evolution=False)
@@ -170,7 +196,7 @@ logging.basicConfig(level=logging.DEBUG)
 
 lake = Lakehouse()
 lake.to_lake(df, "bronze", "events")
-# INFO  [awebo.lakehouse] lakehouse ready: catalog=glue name=lake threshold=512MB
+# INFO  [awebo.lakehouse] lakehouse ready: catalog=glue name=lake
 # INFO  [awebo.io.writer] append bronze.events [0.423s]
 ```
 
@@ -195,8 +221,8 @@ If `opentelemetry-api` is installed (`pip install awebo[otel]`), write
 and query operations automatically emit OTel spans — zero overhead when
 the SDK is absent.
 
-Need direct PyIceberg access (snapshot rollback, manifest tables, schema
-introspection)? Use the escape hatch:
+Need PyIceberg for maintenance with no SQL verb yet (snapshot expiry,
+orphan-file cleanup)? Use the escape hatch:
 
 ```python
 cat = lake.pyiceberg_catalog()
@@ -387,27 +413,26 @@ See [`ARCHITECTURE.md`](./ARCHITECTURE.md). High level:
                            │
        ┌─────────┬─────────┼─────────┬───────────┐
        ▼         ▼         ▼         ▼           ▼
-     auth/    catalog/   query/     io/      streaming/
-   (AWS,…)   (Glue,…)  (DuckDB)  (file,    (Arrow batch
-                                  iceberg)   helpers)
+     auth/    catalog/   query/     io/      lineage/ + quality/
+   (AWS,…)   (Glue,…)  (DuckDB)  (file,
+                                  iceberg)
 ```
 
 | Concern | Engine |
 | --- | --- |
 | Read SQL | DuckDB + `iceberg` extension |
-| Write / DDL | PyIceberg |
-| Data plane | Apache Arrow (zero-copy bridge, streaming batches) |
+| Write / DDL | DuckDB + `iceberg` extension (attached catalog) |
+| Data plane | Apache Arrow (zero-copy scans of Arrow / Polars sources) |
 | User dataframe | Polars (returned by `QueryResult.to_polars()`) |
 
 ## Roadmap
 
 - [x] AWS Glue + S3 catalog
-- [x] Iceberg REST catalog (cloud-agnostic, MinIO-friendly) — write path
-      via PyIceberg; SQL reads via `iceberg_scan('s3://...')` or
-      `lake.pyiceberg_catalog()`. Catalog-qualified DuckDB ATTACH is
-      pending upstream support in the DuckDB iceberg extension.
+- [x] Iceberg REST catalog (cloud-agnostic, MinIO-friendly) — attached in
+      DuckDB for catalog-qualified reads and writes
+- [x] Cloudflare R2 Data Catalog
+- [x] Time travel (`AT (VERSION => ...)` / `AT (TIMESTAMP => ...)` via DuckDB)
 - [ ] GCP BigLake / Azure Tables auth providers
-- [ ] Time-travel SQL helpers (`as of timestamp`, `as of version`)
 
 ## Contributing
 

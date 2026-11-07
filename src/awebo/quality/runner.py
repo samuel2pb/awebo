@@ -57,10 +57,8 @@ class DuckDBSQLRunner:
             compiled = compiler.compile(check, table)
             t0 = time.perf_counter()
             try:
-                relation = self._engine.execute(compiled.metric_sql)
-                metric_value = float(
-                    relation.arrow().read_all().column(0)[0].as_py(),
-                )
+                rows = self._engine.fetch_rows(compiled.metric_sql)
+                metric_value = float(str(rows[0][0]))
             except Exception:
                 log.warning("quality check %r SQL failed", check.name, exc_info=True)
                 metric_value = -1.0

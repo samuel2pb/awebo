@@ -2,9 +2,9 @@
 
 * Property test: any Polars DataFrame round-tripped through to_lake / read
   preserves rows and columns regardless of size or content shape.
-* Memory test: writing a large dataset under a tiny streaming threshold
-  keeps allocations bounded — proves the chunked-append path is doing real
-  work, not silently materialising.
+* Memory test: writing a large dataset under a tight DuckDB memory limit
+  keeps allocations bounded: DuckDB scans the source and writes Parquet
+  without materialising a copy in Python.
 """
 
 from __future__ import annotations
@@ -66,15 +66,15 @@ def test_dataflow_invariant_polars_roundtrip_preserves_rows(
 
 
 @pytest.mark.memory
-def test_dataflow_streaming_write_bounded_memory(tmp_path: Path) -> None:
-    """Force the chunked-append path with threshold=0 and a large source.
+def test_dataflow_write_bounded_memory(tmp_path: Path) -> None:
+    """Write a large source under a tight DuckDB ``memory_limit``.
 
     The test passes if it completes; pytest-memray prints the allocation
-    profile so regressions in the streaming path become visible in CI logs.
+    profile so regressions in the write path become visible in CI logs.
     Tune the row count up if you want a stronger ceiling — keep it modest
     so the suite stays fast.
     """
-    lake = make_test_lakehouse(tmp_path, streaming_threshold_mb=0)
+    lake = make_test_lakehouse(tmp_path, memory_limit="256MB")
     try:
         n = 250_000
         df = pl.DataFrame(
